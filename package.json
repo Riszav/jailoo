@@ -1,0 +1,17 @@
+{
+  "name": "zhailoo",
+  "version": "1.0.0",
+  "description": "Онлайн-настолка «Жайлоо»: юрты, тропы, торговля и буран для 2–8 игроков с ботами",
+  "private": true,
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  }
+}

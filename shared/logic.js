@@ -4,7 +4,7 @@ const RES_RU={wood:"Лес",brick:"Глина",wool:"Шерсть",grain:"Зер
 const COST={road:{wood:1,brick:1},settle:{wood:1,brick:1,wool:1,grain:1},city:{grain:2,ore:3},dev:{wool:1,grain:1,ore:1}};
 const DEV_RU={knight:"Батыр",vp:"Летопись",road:"Караван",yop:"Той",mono:"Ярмарка"};
 const DEV_HINT={knight:"Перегоните буран и заберите карту соседа",vp:"+1 победное очко (скрыто до победы)",road:"Две тропы бесплатно",yop:"Два любых ресурса из запаса",mono:"Все соседи отдают вам ресурс одного вида"};
-const COLORS=["#e0533d","#3d7be0","#efe9dc","#e09a2b","#3faa4f","#8e5bd0","#e85fa3","#3b3b46"];
+const COLORS=["#e0533d","#3d7be0","#1fb5c4","#e09a2b","#3faa4f","#8e5bd0","#e85fa3","#3b3b46"];
 const BOT_NAMES=["Бот Айбек","Бот Нургуль","Бот Талант","Бот Жылдыз","Бот Бакыт","Бот Айпери","Бот Эрлан"];
 const MAX_PLAYERS=8;
 const emptyRes=()=>({wood:0,brick:0,wool:0,grain:0,ore:0});
@@ -48,6 +48,11 @@ const BOARD={
 };
 // Размер карты выбирает создатель в лобби: "auto" — по числу игроков, иначе радиус 2, 3 или 4.
 const MAP_SIZES=["auto",2,3,4];
+// Таймер хода в секундах, 0 — без таймера. Когда время выходит, сервер доигрывает ход за игрока.
+// На бросок кубиков и сброс карт свои короткие таймеры, каждое действие в ход добавляет немного времени.
+const TURN_TIMES=[0,60,90,120];
+// Кубики бросаются сами через TIMER.roll секунд в любой комнате, даже без таймера хода.
+const TIMER={roll:5,discard:20,bonus:10};
 const mapRadius=s=>s.mapSize&&s.mapSize!=="auto"?s.mapSize:boardSize(s.players.length);
 function makeBoard(R){
   const g=geom(R),cfg=BOARD[R];
@@ -66,7 +71,7 @@ function makeBoard(R){
 }
 
 function newPlayer(id,bot,name){return {id,bot,name:name||"",color:"",res:emptyRes(),dev:[],knights:0,road:0};}
-function newGame(code,hostId){return {code,status:"lobby",host:hostId,createdAt:Date.now(),players:[newPlayer(hostId,false)],seq:0,log:[]};}
+function newGame(code,hostId){return {code,status:"lobby",host:hostId,createdAt:Date.now(),players:[newPlayer(hostId,false)],seq:0,log:[],turnTime:90};}
 
 const ownerAt=(s,v)=>{const b=s.buildings[v];return b?b.p:-1;};
 const countPieces=(s,pi)=>{let settle=0,city=0;for(const k in s.buildings){const b=s.buildings[k];if(b.p===pi)b.city?city++:settle++;}
@@ -129,6 +134,12 @@ function vp(s,pi,hidden){
 }
 function addLog(s,t){s.log.push(t);if(s.log.length>60)s.log.splice(0,s.log.length-60);}
 const resText=r=>RES.filter(k=>r[k]).map(k=>`${r[k]} ${RES_RU[k].toLowerCase()}`).join(", ")||"ничего";
+// В журнале ресурсы пишутся токенами «2%wood» — клиент рисует их иконками.
+const resLog=r=>RES.filter(k=>r[k]).map(k=>`${r[k]}%${k}`).join(" ")||"ничего";
+function harborLog(s,pi,v){
+  for(const h of s.harbors){const ed=gOf(s).edges[h.e];
+    if(ed.a===v||ed.b===v)addLog(s,`@${pi} занимает стоянку: ${h.type==="any"?"любой ресурс 3:1":`%${h.type} 2:1`}`);}
+}
 function pay(s,pi,c){const P=s.players[pi];for(const k of RES){P.res[k]-=(c[k]||0);s.bank[k]+=(c[k]||0);}}
 function produce(s,roll){
   const gain=s.players.map(()=>emptyRes());
@@ -138,12 +149,12 @@ function produce(s,roll){
     const total=gain.reduce((a,g)=>a+g[r],0);if(!total)continue;
     if(total>s.bank[r]){
       const recv=gain.filter(g=>g[r]>0).length;
-      if(recv>1){addLog(s,`В запасе мало ресурса «${RES_RU[r]}» — никто его не получает`);gain.forEach(g=>g[r]=0);continue;}
+      if(recv>1){addLog(s,`В запасе мало %${r} — никто его не получает`);gain.forEach(g=>g[r]=0);continue;}
       gain.forEach(g=>{if(g[r])g[r]=s.bank[r];});
     }
     gain.forEach((g,i)=>{s.players[i].res[r]+=g[r];s.bank[r]-=g[r];});
   }
-  gain.forEach((g,i)=>{if(sum(g))addLog(s,`@${i} получает ${resText(g)}`);});
+  gain.forEach((g,i)=>{if(sum(g))addLog(s,`@${i} получает ${resLog(g)}`);});
 }
 function checkWin(s){
   if(s.status!=="play")return;
@@ -163,6 +174,7 @@ function apply(s0,actor,a){
     need(s.host===actor,"Это может только создатель игры");
     if(t==="addBot"){need(s.players.length<MAX_PLAYERS,"Мест нет");const used=s.players.map(p=>p.name);const name=BOT_NAMES.find(n=>!used.includes(n))||"Бот";
       s.players.push(newPlayer("bot-"+Math.random().toString(36).slice(2,8),true,name));return s;}
+    if(t==="setTimer"){need(TURN_TIMES.includes(a.seconds),"Неизвестный таймер");s.turnTime=a.seconds;return s;}
     if(t==="setMap"){need(MAP_SIZES.includes(a.size),"Неизвестный размер карты");s.mapSize=a.size;return s;}
     if(t==="kick"){const k=s.players[a.i];need(k&&k.id!==actor,"Нельзя");s.players.splice(a.i,1);return s;}
     if(t==="start"){
@@ -184,6 +196,19 @@ function apply(s0,actor,a){
   }
   need(s.status==="play","Игра окончена");
   need(pi>=0,"Вы зритель");
+  if(t==="pause"){
+    // Пауза ставится и снимается голосованием: нужно больше половины живых игроков.
+    const humans=s.players.filter(p=>!p.bot).length,needN=Math.floor(humans/2)+1;
+    let v=s.pauseVote;
+    if(!v){need(a.yes,"Голосования нет");v=s.pauseVote={to:!s.paused,by:pi,yes:[],no:[]};
+      if(humans>1)addLog(s,`@${pi} предлагает ${v.to?"поставить паузу":"продолжить игру"}`);}
+    need(!v.yes.includes(pi)&&!v.no.includes(pi),"Вы уже проголосовали");
+    (a.yes?v.yes:v.no).push(pi);
+    if(v.yes.length>=needN){s.paused=v.to;s.pauseVote=null;addLog(s,v.to?"Игра на паузе":"Игра продолжается");}
+    else if(v.no.length>humans-needN){s.pauseVote=null;addLog(s,"Голосование за паузу не прошло");}
+    return s;
+  }
+  need(!s.paused,"Игра на паузе");
   const P=s.players[pi],isCur=pi===s.cur;
 
   if(t==="discard"){
@@ -208,15 +233,15 @@ function apply(s0,actor,a){
         s.buildings[v]={p:pi,city:false};s.last=v;s.step="road";
         if(s.setupIdx>=s.players.length){const g=emptyRes();
           for(const hi of gOf(s).verts[v].hexes){const r=s.board[hi].res;if(r!=="desert"&&s.bank[r]>0){g[r]++;s.bank[r]--;P.res[r]++;}}
-          addLog(s,`@${pi} ставит вторую юрту и получает ${resText(g)}`);}
+          addLog(s,`@${pi} ставит вторую юрту и получает ${resLog(g)}`);}
         else addLog(s,`@${pi} ставит юрту`);
-        updateLongest(s);return s;
+        harborLog(s,pi,v);updateLongest(s);return s;
       }
       need(s.phase==="main","Сначала бросьте кубики");
       need(has(P.res,COST.settle),"Не хватает ресурсов");
       need(countPieces(s,pi).settle<5,"Юрт больше нет");
       need(canSettle(s,v,pi,false),"Здесь нельзя ставить юрту");
-      pay(s,pi,COST.settle);s.buildings[v]={p:pi,city:false};addLog(s,`@${pi} ставит юрту`);updateLongest(s);break;
+      pay(s,pi,COST.settle);s.buildings[v]={p:pi,city:false};addLog(s,`@${pi} ставит юрту`);harborLog(s,pi,v);updateLongest(s);break;
     }
     case "road":{
       const e=a.e;
@@ -263,7 +288,10 @@ function apply(s0,actor,a){
       if(victims.length){
         const vi=victims.length===1?victims[0]:a.victim;need(victims.includes(vi),"Выберите, у кого забрать карту");
         const V=s.players[vi],pool=RES.flatMap(k=>Array(V.res[k]).fill(k)),r=pool[Math.floor(Math.random()*pool.length)];
-        V.res[r]--;P.res[r]++;msg+=` и забирает карту у @${vi}`;
+        V.res[r]--;P.res[r]++;
+        // Что украдено, знают только вор и жертва: сервер вырезает ресурс из steals для остальных.
+        const id=(s.stealNo||0)+1;s.stealNo=id;s.steals={...s.steals,[id]:{t:pi,v:vi,r}};delete s.steals[id-20];
+        msg+=` и забирает %?${id} у @${vi}`;
       }
       addLog(s,msg);s.phase=s.robberReturn||"main";break;
     }
@@ -286,10 +314,10 @@ function apply(s0,actor,a){
         const left=15-countPieces(s,pi).road;s.freeRoads=Math.min(2,left);addLog(s,`@${pi} играет «Караван»`);
         if(s.freeRoads>0&&roadTargets(s,pi).length)s.phase="roadbuilding";
       }else if(c==="yop"){
-        for(const r of [a.a,a.b]){s.bank[r]--;P.res[r]++;}addLog(s,`@${pi} играет «Той»: ${RES_RU[a.a]} и ${RES_RU[a.b]}`);
+        for(const r of [a.a,a.b]){s.bank[r]--;P.res[r]++;}addLog(s,`@${pi} играет «Той»: %${a.a} %${a.b}`);
       }else if(c==="mono"){
         let got=0;s.players.forEach((o,i)=>{if(i!==pi){got+=o.res[a.res];P.res[a.res]+=o.res[a.res];o.res[a.res]=0;}});
-        addLog(s,`@${pi} играет «Ярмарку» и собирает ${got} × ${RES_RU[a.res].toLowerCase()}`);
+        addLog(s,`@${pi} играет «Ярмарку» и собирает ${got}%${a.res}`);
       }
       break;
     }
@@ -298,20 +326,20 @@ function apply(s0,actor,a){
       need(RES.includes(a.give)&&RES.includes(a.get)&&a.give!==a.get,"Выберите разные ресурсы");
       const k=ratio(s,pi,a.give);need(P.res[a.give]>=k,`Нужно ${k} × ${RES_RU[a.give].toLowerCase()}`);need(s.bank[a.get]>0,"В запасе нет этого ресурса");
       P.res[a.give]-=k;s.bank[a.give]+=k;P.res[a.get]++;s.bank[a.get]--;s.turnTrades=(s.turnTrades||0)+1;
-      addLog(s,`@${pi} меняет ${k} ${RES_RU[a.give].toLowerCase()} на ${RES_RU[a.get].toLowerCase()} в запасе`);break;
+      addLog(s,`@${pi} меняет ${k}%${a.give} на %${a.get} в запасе`);break;
     }
     case "offer":{
       need(s.phase==="main","Сначала бросьте кубики");
       need(sum(a.give)>0&&sum(a.get)>0,"Укажите, что отдаёте и что хотите");
       need(RES.every(k=>!(a.give[k]&&a.get[k])),"Один ресурс не может быть и в «отдаю», и в «хочу»");
       need(has(P.res,a.give),"У вас нет этих ресурсов");
-      s.trade={give:a.give,get:a.get,resp:{}};addLog(s,`@${pi} предлагает ${resText(a.give)} за ${resText(a.get)}`);break;
+      s.trade={give:a.give,get:a.get,resp:{}};addLog(s,`@${pi} предлагает ${resLog(a.give)} за ${resLog(a.get)}`);break;
     }
     case "accept":{
       need(s.trade&&s.trade.resp[a.with]===true,"Этот игрок не принял предложение");
       const O=s.players[a.with];need(has(P.res,s.trade.give)&&has(O.res,s.trade.get),"У кого-то уже не хватает ресурсов");
       for(const k of RES){P.res[k]+=-(s.trade.give[k]||0)+(s.trade.get[k]||0);O.res[k]+=(s.trade.give[k]||0)-(s.trade.get[k]||0);}
-      addLog(s,`@${pi} и @${a.with} обменялись`);s.trade=null;break;
+      addLog(s,`@${pi} и @${a.with} обменялись: ${resLog(s.trade.give)} ⇄ ${resLog(s.trade.get)}`);s.trade=null;break;
     }
     case "cancelOffer":s.trade=null;break;
     case "end":{
@@ -338,7 +366,7 @@ function bestRoad(s,pi){
   return best(es,e=>{const ed=gOf(s).edges[e];return Math.max(...[ed.a,ed.b].map(v=>canSettle(s,v,pi,true)?vertexScore(s,v,pi):Math.random()));});
 }
 function botPending(s){
-  if(!s||s.status!=="play")return -1;
+  if(!s||s.status!=="play"||s.paused)return -1;
   if(s.phase==="discard"){for(const k in s.toDiscard)if(s.players[k].bot)return +k;return -1;}
   if(s.trade){for(let i=0;i<s.players.length;i++)if(i!==s.cur&&s.players[i].bot&&s.trade.resp[i]===undefined)return i;}
   if(s.players[s.cur].bot&&!(s.trade&&Object.keys(s.trade.resp).length<s.players.length-1))return s.cur;
@@ -395,4 +423,23 @@ function botStep(s){
   }
 }
 
-if(typeof module!=="undefined")module.exports={RES,RES_RU,COST,DEV_RU,DEV_HINT,COLORS,MAX_PLAYERS,BOARD,MAP_SIZES,mapRadius,gOf,emptyRes,sum,has,pips,newPlayer,newGame,ownerAt,countPieces,canSettle,canRoad,settleTargets,roadTargets,cityTargets,ratio,vp,resText,canPlayDev,apply,botPending,botStep};
+// --- таймер хода ---
+// Ключ меняется, когда ход переходит к другому игроку или начинается сброс на буране, — тогда таймер стартует заново.
+const timerPhase=s=>s.phase==="roll"||s.phase==="discard"?s.phase:"";
+const turnKey=s=>[s.turnNo,s.setupIdx,s.cur,timerPhase(s)].join(":");
+const phaseTime=s=>s.phase==="roll"?TIMER.roll:s.turnTime?TIMER[timerPhase(s)]||s.turnTime:0;
+// Время вышло: сбрасываем случайные карты за всех, кто тянет, или делаем за текущего игрока самый безобидный шаг.
+// Сервер вызывает это, пока ключ не сменится, так что ход доигрывается до конца.
+const randomPick=(res,n)=>{const out=emptyRes();shuffle(RES.flatMap(k=>Array(res[k]).fill(k))).slice(0,n).forEach(k=>out[k]++);return out;};
+function timeoutStep(s){
+  if(s.phase==="discard"){let t=s;for(const k in s.toDiscard)t=apply(t,t.players[k].id,{type:"discard",sel:randomPick(t.players[k].res,t.toDiscard[k])});return t;}
+  const pi=s.cur,id=s.players[pi].id;
+  switch(s.phase){
+    case "setup":case "robber":return apply(s,id,botAction(s,pi));
+    case "roll":return apply(s,id,{type:"roll"});
+    case "roadbuilding":return apply(s,id,{type:"endRoads"});
+    default:return apply(s,id,{type:"end"});
+  }
+}
+
+if(typeof module!=="undefined")module.exports={RES,RES_RU,COST,DEV_RU,DEV_HINT,COLORS,MAX_PLAYERS,BOARD,MAP_SIZES,TURN_TIMES,TIMER,turnKey,phaseTime,timeoutStep,mapRadius,gOf,emptyRes,sum,has,pips,newPlayer,newGame,ownerAt,countPieces,canSettle,canRoad,settleTargets,roadTargets,cityTargets,ratio,vp,resText,canPlayDev,apply,botPending,botStep};

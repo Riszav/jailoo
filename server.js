@@ -23,7 +23,12 @@ const clients = new Set();
 function load() {
   try {
     const list = JSON.parse(fs.readFileSync(DATA_FILE, "utf8"));
-    for (const g of list) games.set(g.code, g);
+    for (const g of list) {
+      // После перезапуска у всех текущий отрезок таймера начинается заново.
+      const t = g.status === "play" ? L.phaseTime(g) : 0;
+      if (t && !g.paused) g.deadline = Date.now() + t * 1000;
+      games.set(g.code, g);
+    }
     console.log(`Загружено партий: ${games.size}`);
   } catch {
     console.log("Сохранённых партий нет, начинаем с чистого листа");
@@ -57,6 +62,12 @@ const cleanName = (n) => String(n || "").replace(/[\u0000-\u001f]/g, "").trim().
 function viewFor(game, viewerId) {
   if (game.status !== "play") return game;
   const v = structuredClone(game);
+  const me = v.players.findIndex((p) => p.id === viewerId);
+  for (const k in v.steals) if (me !== v.steals[k].t && me !== v.steals[k].v) delete v.steals[k].r;
+  v.timeLeft = game.paused ? game.pausedLeft ?? null : game.deadline ? Math.max(0, game.deadline - Date.now()) : null;
+  delete v.deadline;
+  delete v.pausedLeft;
+  delete v.timerKey;
   for (const p of v.players) {
     p.resCount = L.sum(p.res);
     p.devCount = p.dev.length;
@@ -102,9 +113,36 @@ function broadcastLobby() {
   }, 50);
 }
 
-function changed(code) {
+// Таймер: новый отрезок, когда сменился ключ хода (игрок, бросок, сброс); действие текущего игрока добавляет бонус.
+function touchTimer(g, bonus) {
+  if (g.status !== "play") {
+    delete g.deadline;
+    delete g.timerKey;
+    delete g.pausedLeft;
+    return;
+  }
+  const now = Date.now();
+  if (g.paused) {
+    if (g.pausedLeft == null && g.deadline) g.pausedLeft = Math.max(0, g.deadline - now);
+    return;
+  }
+  if (g.pausedLeft != null) {
+    g.deadline = now + g.pausedLeft;
+    delete g.pausedLeft;
+  }
+  const key = L.turnKey(g), full = L.phaseTime(g) * 1000, fresh = key !== g.timerKey;
+  g.timerKey = key;
+  if (!full) delete g.deadline;
+  else if (fresh || !g.deadline) g.deadline = now + full;
+  else if (bonus) g.deadline = Math.min(g.deadline + L.TIMER.bonus * 1000, now + full);
+}
+
+function changed(code, bonus) {
   const g = games.get(code);
-  if (g) g.updatedAt = Date.now();
+  if (g) {
+    g.updatedAt = Date.now();
+    touchTimer(g, bonus);
+  }
   broadcastGame(code);
   broadcastLobby();
   save();
@@ -193,7 +231,8 @@ function handle(ws, msg) {
       next.names = next.names || {};
       games.set(g.code, next);
       rememberName(next, ws);
-      changed(g.code);
+      const actor = next.players?.findIndex((p) => p.id === ws.playerId);
+      changed(g.code, next.status === "play" && actor === next.cur && msg.action?.type !== "pause");
       return;
     }
     default:
@@ -202,13 +241,17 @@ function handle(ws, msg) {
 }
 
 function botTick() {
+  const now = Date.now();
   for (const g of games.values()) {
-    if (g.status !== "play" || L.botPending(g) < 0) continue;
+    if (g.status !== "play" || g.paused) continue;
+    const bot = L.botPending(g) >= 0;
+    if (!bot && !(g.deadline && now > g.deadline)) continue;
     let next;
     try {
-      next = L.botStep(g);
+      next = bot ? L.botStep(g) : L.timeoutStep(g);
     } catch (e) {
-      console.error(`Бот завис в игре ${g.code}:`, e.message);
+      console.error(`${bot ? "Бот завис" : "Не удалось доиграть ход по таймеру"} в игре ${g.code}:`, e.message);
+      if (!bot) g.deadline = now + (L.phaseTime(g) || L.TIMER.roll) * 1000;
       continue;
     }
     if (!next) continue;

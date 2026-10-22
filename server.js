@@ -15,6 +15,7 @@ const STATIC = {
   "/style.css": ["public/style.css", "text/css; charset=utf-8"],
   "/client.js": ["public/client.js", "text/javascript; charset=utf-8"],
   "/logic.js": ["shared/logic.js", "text/javascript; charset=utf-8"],
+  "/favicon.svg": ["public/favicon.svg", "image/svg+xml"],
 };
 
 const games = new Map();

@@ -54,6 +54,7 @@ function connect() {
       if (m.game.code !== currentCode) return;
       const old = game && game.code === m.game.code ? game : null;
       game = m.game;
+      cacheGame(game);
       timerEnd = game.timeLeft != null ? Date.now() + game.timeLeft : null;
       noticeChanges(old, game);
       if (game.phase !== "discard") ui.disc = emptyRes();
@@ -152,9 +153,20 @@ const ava = (name, color, cls = "") => `<span class="ava ${cls}" style="backgrou
 function render() {
   // Перерисовка убирает элемент под подсказкой — прячем её, иначе она повиснет.
   queueMicrotask(retip);
+  // Пока игрок печатает, комната может обновиться (зашёл бот или игрок) — сохраняем текст и курсор в поле ввода.
+  const a = document.activeElement, keep = a && a.tagName === "INPUT" && a.id ? { id: a.id, v: a.value, s: a.selectionStart, e: a.selectionEnd } : null;
+  renderView();
+  if (keep && $(keep.id)) {
+    const el = $(keep.id);
+    el.value = keep.v;
+    el.focus();
+    try { el.setSelectionRange(keep.s, keep.e); } catch {}
+  }
+}
+function renderView() {
   const me = $("me");
   me.innerHTML = myName ? `${ava(myName, "#f2b53a", "sm")}<span>${esc(myName)}</span>` : "";
-  if (!game) return renderLobby();
+  if (!game) return currentCode ? renderLoading() : renderLobby();
   if (game.status === "lobby") renderRoom();
   else renderGame();
 }
@@ -195,7 +207,7 @@ function renderLobby() {
         <p class="lead">Бесплатная онлайн-настолка для 2–8 игроков. Зовите друзей по ссылке или играйте против ботов прямо в браузере.</p>
         <div class="playbox">
           <label for="myname">Ваше имя</label>
-          <div class="namerow"><input id="myname" maxlength="24" value="${esc(myName)}" placeholder="Например, Айгуль"><button class="btn ghost" data-a="rename">Сохранить</button></div>
+          <div class="namerow"><input id="myname" maxlength="24" value="${esc(ui.nameDraft ?? myName)}" placeholder="Например, Айгуль"><button class="btn ghost" data-a="rename">Сохранить</button></div>
           <div class="bigbtns">
             <button class="btn green big" data-a="quick">${ICON("bot")}Играть с ботами</button>
             <button class="btn blue big" data-a="create">${ICON("users")}Играть с друзьями</button>
@@ -248,7 +260,9 @@ function renderRoom() {
   }).join("");
   $("view").innerHTML = `<div class="roomgrid">
     <div class="panel pad"><h2>Игроки <span class="muted">${s.players.length}/${MAX_PLAYERS}</span></h2><div class="slots">${slots}</div>
-      ${host ? "" : `<p class="hint">Игру начинает создатель комнаты.</p>`}</div>
+      ${host ? "" : `<p class="hint">Игру начинает создатель комнаты.</p>`}
+      <h3><label for="myname">Ваше имя</label></h3>
+      <div class="namerow"><input id="myname" maxlength="24" value="${esc(ui.nameDraft ?? myName)}" placeholder="Например, Айгуль"><button class="btn" data-a="rename">Сохранить</button></div></div>
     <div class="panel pad"><h3>Код комнаты</h3><span class="bigcode">${esc(s.code)}</span>
       <h3>Пригласить друзей</h3>
       <div class="linkrow"><input readonly value="${esc(link)}" aria-label="Ссылка на игру"><button class="btn" data-copy="${esc(link)}">Копировать</button></div>
@@ -260,7 +274,7 @@ function renderRoom() {
       <p class="hint">${host ? "" : "Карту и таймер выбирает создатель комнаты. "}Кубики бросаются сами через ${TIMER.roll} с. С таймером на сброс карт даётся ${TIMER.discard} с, каждое действие в ход добавляет ${TIMER.bonus} с. Время вышло — ход доигрывается автоматически.</p>
       ${tooMany ? `<p class="warn">${cfg.name} карта рассчитана максимум на ${cfg.maxPlayers} игроков — выберите карту побольше или уберите лишних.</p>` : ""}
       ${me < 0 ? `<button class="btn green big" data-a="join" ${s.players.length >= MAX_PLAYERS || !myName ? "disabled" : ""}>Сесть за стол</button>` : ""}
-      ${me < 0 && !myName ? `<p class="hint">Чтобы сесть за стол, укажите имя на главной.</p>` : ""}
+      ${me < 0 && !myName ? `<p class="hint">Чтобы сесть за стол, укажите имя слева.</p>` : ""}
       ${host ? `<button class="btn green big" data-a="start" ${s.players.length < 2 || tooMany ? "disabled" : ""}>Начать игру</button>` : ""}
       <div class="row">${me >= 0 && !host ? `<button class="btn red small" data-a="leave">${ICON("exit")}Выйти из комнаты</button>` : `<button class="btn small" data-a="back">К списку комнат</button>`}${host ? delBtn(s.code) : ""}</div>
     </div></div>`;
@@ -572,9 +586,21 @@ function openGame(code) {
   ui.robberHex = null;
   send({ t: "open", code });
 }
+// Последнее состояние партии держим в sessionStorage вкладки: после перезагрузки сразу рисуем игру,
+// не дожидаясь сервера, а живое состояние приходит следом и заменяет его.
+function cacheGame(g) { try { sessionStorage.setItem("zh.cache", JSON.stringify(g)); } catch {} }
+function cachedGame(code) {
+  try { const g = JSON.parse(sessionStorage.getItem("zh.cache")); return g && g.code === code ? g : null; } catch { return null; }
+}
+// Кэша нет (новая вкладка) — вместо главной показываем заглушку, пока сервер не ответит.
+function renderLoading() {
+  document.body.classList.add("ingame");
+  $("view").innerHTML = `<div class="loading"><div class="panel">${ICON("logo")}<span>Открываем партию <b class="code">${esc(currentCode)}</b>…</span></div></div>`;
+}
 function closeGame() {
   if (currentCode) send({ t: "close" });
   store.set("zh.game", "");
+  cacheGame(null);
   game = null;
   currentCode = null;
   ui.panel = null;
@@ -583,6 +609,9 @@ function closeGame() {
 }
 function saveName() {
   const v = ($("myname")?.value || "").trim().slice(0, 24);
+  if (!v) return toast("Имя не может быть пустым");
+  ui.nameDraft = null;
+  if (v !== myName && game) toast("Имя сохранено");
   myName = v;
   store.set("zh.name", v);
   send({ t: "rename", name: v });
@@ -816,6 +845,8 @@ document.addEventListener("click", async (ev) => {
   if (d.a === "leave") { act({ type: "leave" }); return closeGame(); }
   if (d.a) return act({ type: d.a });
 });
+// Несохранённое имя переживает перерисовку, даже если фокус ушёл на другую кнопку.
+document.addEventListener("input", (ev) => { if (ev.target.id === "myname") ui.nameDraft = ev.target.value; });
 document.addEventListener("keydown", (ev) => {
   if (ev.key !== "Enter") return;
   if (ev.target.id === "joincode") openGame(ev.target.value);
@@ -825,5 +856,10 @@ document.addEventListener("keydown", (ev) => {
 // Сессия: без кода в адресе возвращаемся в партию, открытую в прошлый раз.
 if (/^#[A-Z0-9]{4,6}$/i.test(location.hash)) currentCode = location.hash.slice(1).toUpperCase();
 else if (/^[A-Z0-9]{4,6}$/.test(store.get("zh.game") || "")) currentCode = store.get("zh.game");
+if (currentCode) {
+  game = cachedGame(currentCode);
+  // Время в кэше устарело — таймер покажем, когда придёт живое состояние.
+  if (game) game.timeLeft = null;
+}
 render();
 connect();

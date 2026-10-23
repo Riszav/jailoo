@@ -72,7 +72,8 @@ function viewFor(game, viewerId) {
   for (const p of v.players) {
     p.resCount = L.sum(p.res);
     p.devCount = p.dev.length;
-    if (p.id !== viewerId) {
+    // Отдавший место боту продолжает видеть карты своего места.
+    if (p.id !== viewerId && p.was !== viewerId) {
       p.res = L.emptyRes();
       p.dev = [];
     }

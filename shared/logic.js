@@ -198,6 +198,12 @@ function apply(s0,actor,a){
     throw new Error("Игра ещё не началась");
   }
   need(s.status==="play","Игра окончена");
+  if(t==="reclaim"){
+    // Ушедший игрок забирает своё место у бота обратно — со всем, что бот успел накопить.
+    const bi=s.players.findIndex(p=>p.bot&&p.was===actor);need(pi<0&&bi>=0,"Нет места, которое можно вернуть");
+    const B=s.players[bi];Object.assign(B,{bot:false,id:actor,name:""});delete B.was;delete B.level;
+    addLog(s,`@${bi} возвращается в игру`);return s;
+  }
   need(pi>=0,"Вы зритель");
   if(t==="pause"){
     // Пауза ставится и снимается голосованием: нужно больше половины живых игроков.
@@ -212,14 +218,15 @@ function apply(s0,actor,a){
     return s;
   }
   if(t==="abandon"){
-    // Игрок уходит насовсем: его место со всеми картами и постройками занимает бот средней сложности.
+    // Место со всеми картами и постройками занимает бот средней сложности; was — кто может забрать его обратно.
     const name=(s.names&&s.names[actor])||`Игрок ${pi+1}`;
-    Object.assign(s.players[pi],{bot:true,level:"medium",name:`${name} (бот)`,id:"bot-"+Math.random().toString(36).slice(2,8)});
+    Object.assign(s.players[pi],{bot:true,level:"medium",name:`${name} (бот)`,id:"bot-"+Math.random().toString(36).slice(2,8),was:actor});
     if(s.pauseVote){s.pauseVote.yes=s.pauseVote.yes.filter(i=>i!==pi);s.pauseVote.no=s.pauseVote.no.filter(i=>i!==pi);}
     addLog(s,`${name} выходит из игры, место занимает бот @${pi}`);
+    // Партию удаляем, только если в ней не осталось ни людей, ни ушедших, которые могут вернуться.
     const human=s.players.find(p=>!p.bot);
-    if(!human)return null;
-    if(s.host===actor)s.host=human.id;
+    if(!human&&!s.players.some(p=>p.was))return null;
+    if(human&&s.host===actor)s.host=human.id;
     return s;
   }
   need(!s.paused,"Игра на паузе");

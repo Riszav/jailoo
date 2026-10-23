@@ -218,7 +218,7 @@ svg.board{width:100%;height:100%;display:block;touch-action:manipulation;filter:
 .ab.go:active:not(:disabled){box-shadow:0 1px 0 var(--green-sh)}
 .cost{display:inline-flex;gap:2px}
 .cost i{width:7px;height:10px;border-radius:2px;display:inline-block}
-.spect{padding:16px 18px}
+.spect{padding:16px 18px;display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
 
 .side{grid-column:2;grid-row:1/3;display:flex;flex-direction:column;gap:12px;min-height:0;min-width:0}
 .players{display:flex;flex-direction:column;gap:2px;padding:6px}

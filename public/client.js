@@ -568,7 +568,10 @@ function renderGame() {
     ].join("");
     hud = `<div class="panel hand ${total > 7 ? "over7" : ""}">${warn}${cards}${devs ? `<span class="sep"></span>${devs}` : ""}</div><div class="panel acts">${acts}</div>`;
   } else {
-    hud = `<div class="panel spect muted">Вы смотрите эту партию как зритель.</div>`;
+    const mySeat = s.status === "play" ? s.players.findIndex((p) => p.bot && p.was === myId) : -1;
+    hud = mySeat >= 0
+      ? `<div class="panel spect"><span class="muted">За вас играет бот — вы смотрите партию.</span><button class="btn green small" data-a="reclaim">${ICON("play")}Вернуть управление</button></div>`
+      : `<div class="panel spect muted">Вы смотрите эту партию как зритель.</div>`;
   }
 
   const rollFx = fxOn(fx.roll) ? fx.roll : null, dst = rollFx ? fxDelay(rollFx) : "";
@@ -589,7 +592,7 @@ function renderGame() {
     <div class="stage">
       <div class="panel turn ${mine ? "mine" : ""}" style="--pc:${cur.color}">${ava(nameOf(s, s.cur), cur.color)}
         <div class="txt"><span class="who">${s.status === "over" ? "Игра окончена" : (mine ? "Ваш ход!" : "Ход: " + esc(nameOf(s, s.cur)))}</span><span class="hint">${s.status === "play" ? esc(phaseHint(s, me)) : ""}</span>${turnExtra}</div>${timer}${dice}</div>
-      <div class="topr"><span class="chip">Код <span class="code">${esc(s.code)}</span></span><button class="btn ghost small" data-a="theme" title="${themeIcon().label}" aria-label="${themeIcon().label}">${themeIcon().html}</button><button class="btn ghost small ${ui.panel === "legend" ? "on" : ""}" data-panel="legend" title="Как читать поле — легенда">${ICON("help")}<span class="tl">Поле</span></button>${pauseBtn}<button class="btn ghost small" data-a="back" title="К списку партий — ваше место остаётся за вами">${ICON("exit")}<span class="tl">Выйти</span></button>${me >= 0 && s.status === "play" ? `<button class="btn ghost small" data-a="abandon" title="Отдать место боту — вы покинете партию, вместо вас доиграет бот">${ICON("bot")}<span class="tl">Отдать боту</span></button>` : ""}${s.host === myId ? delBtn(s.code) : ""}</div>
+      <div class="topr"><span class="chip">Код <span class="code">${esc(s.code)}</span></span><button class="btn ghost small" data-a="theme" title="${themeIcon().label}" aria-label="${themeIcon().label}">${themeIcon().html}</button><button class="btn ghost small ${ui.panel === "legend" ? "on" : ""}" data-panel="legend" title="Как читать поле — легенда">${ICON("help")}<span class="tl">Поле</span></button>${pauseBtn}<button class="btn ghost small" data-a="back" title="К списку партий — ваше место остаётся за вами">${ICON("exit")}<span class="tl">Выйти</span></button>${me >= 0 && s.status === "play" ? `<button class="btn ghost small" data-a="abandon" title="Отдать место боту — он будет играть за вас, а вы сможете смотреть и вернуть управление">${ICON("bot")}<span class="tl">Отдать боту</span></button>` : ""}${s.host === myId ? delBtn(s.code) : ""}</div>
       <div class="boardbox">${boardSVG(s, me)}<div class="zoombar"><button data-zoom="in" aria-label="Приблизить" title="Приблизить">+</button><button data-zoom="out" aria-label="Отдалить" title="Отдалить">−</button><button data-zoom="reset" aria-label="Показать всё поле" title="Показать всё поле">${ICON("fit")}</button></div></div>
       ${s.paused ? `<div class="over paused"><div class="panel">${ICON("pause")}<span class="w">Пауза</span><span class="muted">Таймеры и боты стоят. Снять паузу — голосованием игроков.</span></div></div>` : ""}
       ${mine && fxOn(fx.turn, 1800) ? `<div class="yourturn" ${fxDelay(fx.turn)}>Ваш ход!</div>` : ""}
@@ -834,10 +837,10 @@ document.addEventListener("click", async (ev) => {
   }
   if (d.lvl) { const [i, level] = d.lvl.split(":"); return act({ type: "setBotLevel", i: +i, level }); }
   if (d.a === "abandon") {
-    if (!confirm("Покинуть партию? Ваше место со всеми картами и постройками займёт бот средней сложности. Вернуться в партию игроком будет нельзя.")) return;
-    act({ type: "abandon" });
-    return closeGame();
+    if (!confirm("Отдать место боту? Он продолжит игру вашими картами и постройками, а вы сможете смотреть партию и в любой момент вернуть управление.")) return;
+    return act({ type: "abandon" });
   }
+  if (d.a === "reclaim") return act({ type: "reclaim" });
   if (d.timer !== undefined) return act({ type: "setTimer", seconds: +d.timer });
   if (d.pause !== undefined) return act({ type: "pause", yes: d.pause === "1" });
   if (d.tr) {

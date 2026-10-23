@@ -147,10 +147,30 @@ const inkOn = (c) => {
   return 0.299 * (n >> 16) + 0.587 * ((n >> 8) & 255) + 0.114 * (n & 255) > 160 ? "#2a2418" : "#fff";
 };
 const plural = (n, one, few, many) => (n % 10 === 1 && n % 100 !== 11 ? one : n % 10 >= 2 && n % 10 <= 4 && (n % 100 < 12 || n % 100 > 14) ? few : many);
-const delBtn = (code, small) => `<button class="btn red small" data-del="${esc(code)}" title="Удалить игру">${ICON("trash")}${small ? "" : "Удалить игру"}</button>`;
+const delBtn = (code, small) => `<button class="btn red small" data-del="${esc(code)}" title="Удалить игру">${ICON("trash")}${small ? "" : '<span class="tl">Удалить игру</span>'}</button>`;
 const ava = (name, color, cls = "") => `<span class="ava ${cls}" style="background:${color};color:${inkOn(color)}" title="${esc(name)}">${esc(initial(name))}</span>`;
 
+// --- тема ---
+const theme = () => (document.documentElement.dataset.theme === "dark" ? "dark" : "light");
+const themeIcon = () => {
+  const dark = theme() === "dark", label = dark ? "Светлая тема" : "Тёмная тема";
+  return { label, html: ICON(dark ? "sun" : "moon") };
+};
+function setTheme(t, remember) {
+  document.documentElement.dataset.theme = t;
+  if (remember) store.set("zh.theme", t);
+  render();
+}
+// Пока игрок сам не выбрал тему, следуем за системной.
+matchMedia("(prefers-color-scheme: dark)").addEventListener?.("change", (e) => {
+  if (!store.get("zh.theme")) setTheme(e.matches ? "dark" : "light", false);
+});
+
 function render() {
+  const tb = $("themebtn"), ti = themeIcon();
+  tb.innerHTML = ti.html;
+  tb.dataset.tip = ti.label;
+  tb.setAttribute("aria-label", ti.label);
   // Перерисовка убирает элемент под подсказкой — прячем её, иначе она повиснет.
   queueMicrotask(retip);
   // Пока игрок печатает, комната может обновиться (зашёл бот или игрок) — сохраняем текст и курсор в поле ввода.
@@ -253,10 +273,12 @@ function renderRoom() {
   document.title = `Игра ${s.code} — Жайлоо`;
   document.body.classList.remove("ingame");
   const link = `${location.origin}${location.pathname}#${s.code}`;
+  // Сложность бота: три кнопки-ступеньки, видны только создателю.
+  const levelPick = (i, cur) => `<span class="lvl" role="group" aria-label="Сложность бота">${LEVELS.map((l) => `<button class="${l === cur ? "on" : ""}" data-lvl="${i}:${l}" aria-pressed="${l === cur}" title="Сложность — ${LEVEL_RU[l]}">${LEVEL_RU[l][0].toUpperCase()}${LEVEL_RU[l].slice(1)}</button>`).join("")}</span>`;
   const slots = [...Array(MAX_PLAYERS).keys()].map((i) => {
     const p = s.players[i];
     if (!p) return `<div class="slot free"><span class="ava ghost">+</span><span class="nm muted">Свободное место</span>${host ? `<button class="btn small" data-a="addBot">${ICON("bot")}Бот</button>` : ""}</div>`;
-    return `<div class="slot">${ava(nameOf(s, i), COLORS[i])}<span class="nm">${esc(nameOf(s, i))}${p.bot ? ' <span class="badge">бот</span>' : ""}${p.id === s.host ? ' <span class="badge gold">создатель</span>' : ""}${p.id === myId ? ' <span class="badge">вы</span>' : ""}</span>${host && p.id !== myId ? `<button class="btn small red" data-kick="${i}">Убрать</button>` : ""}</div>`;
+    return `<div class="slot">${ava(nameOf(s, i), COLORS[i])}<span class="nm">${esc(nameOf(s, i))}${p.bot && !host ? ` <span class="badge">бот · ${LEVEL_RU[p.level || "medium"]}</span>` : p.bot ? ' <span class="badge">бот</span>' : ""}${p.id === s.host ? ' <span class="badge gold">создатель</span>' : ""}${p.id === myId ? ' <span class="badge">вы</span>' : ""}</span>${host && p.bot ? levelPick(i, p.level || "medium") : ""}${host && p.id !== myId ? `<button class="btn small red" data-kick="${i}">Убрать</button>` : ""}</div>`;
   }).join("");
   $("view").innerHTML = `<div class="roomgrid">
     <div class="panel pad"><h2>Игроки <span class="muted">${s.players.length}/${MAX_PLAYERS}</span></h2><div class="slots">${slots}</div>
@@ -391,8 +413,18 @@ const picker = (key, label, counts, sub) => `<div class="pickrow"><span class="l
 const resChip = (k, n = 1) => `<span class="lr r-${k}" title="${RES_RU[k]}${n > 1 ? " × " + n : ""}">${ICON(k)}${n !== 1 ? `<b>${n}</b>` : ""}</span>`;
 const resChips = (r) => RES.filter((k) => r[k]).map((k) => resChip(k, r[k])).join("") || '<span class="muted">ничего</span>';
 const deal = (l1, give, l2, get) => `<div class="deal"><div><span class="lbl">${l1}</span><span class="chips">${resChips(give)}</span></div><span class="arr" aria-hidden="true">→</span><div><span class="lbl">${l2}</span><span class="chips">${resChips(get)}</span></div></div>`;
+// Бросок в журнале — токен «#d3-4»: рисуем два кубика и сумму, строку выделяем; семёрка — красным, это буран.
+// Старые записи «бросает 8» без кубиков выделяем так же, только по сумме.
+const ROLL_RE = /бросает (?:#d(\d)-(\d)|(\d+)$)/;
+const logClass = (t) => {
+  const m = ROLL_RE.exec(t);
+  if (!m) return "";
+  return ` class="roll ${(m[3] ? +m[3] : +m[1] + +m[2]) === 7 ? "seven" : ""}"`;
+};
+const rollHTML = (a, b, n) => `бросает ${a ? die(+a, false) + die(+b, true) : ""}<b class="rsum">${n}</b>`;
 // В журнале ресурсы приходят токенами «2%wood», украденная карта — «%?id»: её видят только вор и жертва.
 const fmtLog = (s, t) => esc(t)
+  .replace(ROLL_RE, (_, a, b, n) => rollHTML(a, b, n || +a + +b))
   .replace(/%\?(\d+)/g, (_, id) => (s.steals?.[id]?.r ? resChip(s.steals[id].r) : `<span class="lr r-hidden" title="Карта скрыта">${ICON("card")}</span>`))
   .replace(/(\d+)?%(wood|brick|wool|grain|ore)/g, (_, n, k) => resChip(k, n === undefined ? 1 : +n))
   .replace(/@(\d)/g, (_, i) => (s.players[+i] ? `<b class="who" style="background:${s.players[+i].color};color:${inkOn(s.players[+i].color)}">` : "<b>") + `${esc(nameOf(s, +i))}</b>`);
@@ -546,18 +578,18 @@ function renderGame() {
   const turnExtra = mine && s.phase === "roadbuilding" ? `<button class="btn small" data-a="endRoads">Закончить караван</button>` : "";
   const players = s.players.map((p, i) => `<div class="pl ${i === s.cur && s.status === "play" ? "cur" : ""}" style="--pc:${p.color}">
       ${ava(nameOf(s, i), p.color)}
-      <div style="min-width:0"><div class="nm"><span>${esc(nameOf(s, i))}</span>${i === me ? '<span class="badge">вы</span>' : ""}${p.bot ? '<span class="badge">бот</span>' : ""}${s.phase === "discard" && s.toDiscard[i] ? '<span class="badge gold">сбрасывает</span>' : ""}</div>
+      <div style="min-width:0"><div class="nm"><span>${esc(nameOf(s, i))}</span>${i === me ? '<span class="badge">вы</span>' : ""}${p.bot ? `<span class="badge" title="Бот — сложность: ${LEVEL_RU[p.level || "medium"]}">бот · ${LEVEL_RU[p.level || "medium"]}</span>` : ""}${s.phase === "discard" && s.toDiscard[i] ? '<span class="badge gold">сбрасывает</span>' : ""}</div>
         <div class="pstats"><span class="${cnt(p) > 7 ? "danger" : ""}" title="Карт ресурсов${cnt(p) > 7 ? " — больше 7: на «7» сбросит половину" : ""}">${ICON("cards")}${cnt(p)}</span><span title="Карт развития">${ICON("card")}${devCnt(p)}</span>
           <span class="${s.army === i ? "hl" : ""}" title="Сыграно батыров${s.army === i ? " · Сильнейшая дружина" : ""}">${ICON("sword")}${p.knights}</span>
           <span class="${s.longest === i ? "hl" : ""}" title="Длина пути${s.longest === i ? " · Великий путь" : ""}">${ICON("road")}${p.road}</span></div></div>
       <span class="vp" title="Победные очки">${vp(s, i, i === me || s.status === "over")}<small>очк.</small></span></div>`).join("");
-  const pauseBtn = me >= 0 && s.status === "play" && !s.pauseVote ? `<button class="btn ghost small" data-pause="1">${ICON(s.paused ? "play" : "pause")}${s.paused ? "Продолжить" : "Пауза"}</button>` : "";
+  const pauseBtn = me >= 0 && s.status === "play" && !s.pauseVote ? `<button class="btn ghost small" data-pause="1" title="${s.paused ? "Продолжить — снять паузу голосованием" : "Пауза — ставится голосованием игроков"}">${ICON(s.paused ? "play" : "pause")}<span class="tl">${s.paused ? "Продолжить" : "Пауза"}</span></button>` : "";
 
   $("view").innerHTML = `<div class="game">
     <div class="stage">
       <div class="panel turn ${mine ? "mine" : ""}" style="--pc:${cur.color}">${ava(nameOf(s, s.cur), cur.color)}
         <div class="txt"><span class="who">${s.status === "over" ? "Игра окончена" : (mine ? "Ваш ход!" : "Ход: " + esc(nameOf(s, s.cur)))}</span><span class="hint">${s.status === "play" ? esc(phaseHint(s, me)) : ""}</span>${turnExtra}</div>${timer}${dice}</div>
-      <div class="topr"><span class="chip">Код <span class="code">${esc(s.code)}</span></span><button class="btn ghost small ${ui.panel === "legend" ? "on" : ""}" data-panel="legend">${ICON("help")}Поле</button>${pauseBtn}<button class="btn ghost small" data-a="back">${ICON("exit")}Выйти</button>${s.host === myId ? delBtn(s.code) : ""}</div>
+      <div class="topr"><span class="chip">Код <span class="code">${esc(s.code)}</span></span><button class="btn ghost small" data-a="theme" title="${themeIcon().label}" aria-label="${themeIcon().label}">${themeIcon().html}</button><button class="btn ghost small ${ui.panel === "legend" ? "on" : ""}" data-panel="legend" title="Как читать поле — легенда">${ICON("help")}<span class="tl">Поле</span></button>${pauseBtn}<button class="btn ghost small" data-a="back" title="К списку партий — ваше место остаётся за вами">${ICON("exit")}<span class="tl">Выйти</span></button>${me >= 0 && s.status === "play" ? `<button class="btn ghost small" data-a="abandon" title="Отдать место боту — вы покинете партию, вместо вас доиграет бот">${ICON("bot")}<span class="tl">Отдать боту</span></button>` : ""}${s.host === myId ? delBtn(s.code) : ""}</div>
       <div class="boardbox">${boardSVG(s, me)}<div class="zoombar"><button data-zoom="in" aria-label="Приблизить" title="Приблизить">+</button><button data-zoom="out" aria-label="Отдалить" title="Отдалить">−</button><button data-zoom="reset" aria-label="Показать всё поле" title="Показать всё поле">${ICON("fit")}</button></div></div>
       ${s.paused ? `<div class="over paused"><div class="panel">${ICON("pause")}<span class="w">Пауза</span><span class="muted">Таймеры и боты стоят. Снять паузу — голосованием игроков.</span></div></div>` : ""}
       ${mine && fxOn(fx.turn, 1800) ? `<div class="yourturn" ${fxDelay(fx.turn)}>Ваш ход!</div>` : ""}
@@ -568,7 +600,7 @@ function renderGame() {
     <aside class="side">
       <div class="panel"><div class="ph"><h3>Игроки</h3></div><div class="players">${players}</div>
         <div class="bank">Запас: ${RES.map((k) => `<span title="${RES_RU[k]}"><i class="sw r-${k}"></i>${s.bank[k]}</span>`).join("")}<span title="Карт развития">${ICON("card")}${s.deckCount ?? s.deck.length}</span></div></div>
-      <div class="panel logp"><div class="ph"><h3>Журнал</h3></div><div class="log" id="log">${s.log.map((t) => `<div>${fmtLog(s, t)}</div>`).join("")}</div></div>
+      <div class="panel logp"><div class="ph"><h3>Журнал</h3></div><div class="log" id="log">${s.log.map((t) => `<div${logClass(t)}>${fmtLog(s, t)}</div>`).join("")}</div></div>
     </aside></div>`;
   const lg = $("log");
   if (lg) lg.scrollTop = lg.scrollHeight;
@@ -773,6 +805,7 @@ document.addEventListener("click", async (ev) => {
     return $("sec-" + d.scroll)?.scrollIntoView({ behavior: "smooth", block: "start" });
   }
   if (d.a === "rename") return saveName();
+  if (d.a === "theme") return setTheme(theme() === "dark" ? "light" : "dark", true);
   if (d.a === "create") { if (game || ensureName()) send({ t: "create" }); return; }
   if (d.a === "quick") {
     if (!ensureName()) return;
@@ -798,6 +831,12 @@ document.addEventListener("click", async (ev) => {
     const svg = document.querySelector("svg.board");
     if (d.zoom === "reset") { zoom.k = 1; zoom.cx = 0; zoom.cy = 0; return applyZoom(); }
     return svg && zoomAt(svg, zoom.k * (d.zoom === "in" ? 1.4 : 1 / 1.4));
+  }
+  if (d.lvl) { const [i, level] = d.lvl.split(":"); return act({ type: "setBotLevel", i: +i, level }); }
+  if (d.a === "abandon") {
+    if (!confirm("Покинуть партию? Ваше место со всеми картами и постройками займёт бот средней сложности. Вернуться в партию игроком будет нельзя.")) return;
+    act({ type: "abandon" });
+    return closeGame();
   }
   if (d.timer !== undefined) return act({ type: "setTimer", seconds: +d.timer });
   if (d.pause !== undefined) return act({ type: "pause", yes: d.pause === "1" });
@@ -851,6 +890,12 @@ document.addEventListener("keydown", (ev) => {
   if (ev.key !== "Enter") return;
   if (ev.target.id === "joincode") openGame(ev.target.value);
   if (ev.target.id === "myname") saveName();
+});
+
+// Ссылку на партию вставили в уже открытую вкладку — меняется только #КОД, страница не перезагружается.
+window.addEventListener("hashchange", () => {
+  const code = location.hash.slice(1).toUpperCase();
+  if (/^[A-Z0-9]{4,6}$/.test(code) && code !== currentCode) openGame(code);
 });
 
 // Сессия: без кода в адресе возвращаемся в партию, открытую в прошлый раз.

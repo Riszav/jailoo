@@ -7,6 +7,8 @@ const DEV_HINT={knight:"Перегоните буран и заберите ка
 const COLORS=["#e0533d","#3d7be0","#1fb5c4","#e09a2b","#3faa4f","#8e5bd0","#e85fa3","#3b3b46"];
 const BOT_NAMES=["Бот Айбек","Бот Нургуль","Бот Талант","Бот Жылдыз","Бот Бакыт","Бот Айпери","Бот Эрлан"];
 const MAX_PLAYERS=8;
+const LEVELS=["easy","medium","hard"];
+const LEVEL_RU={easy:"лёгкий",medium:"средний",hard:"сложный"};
 const emptyRes=()=>({wood:0,brick:0,wool:0,grain:0,ore:0});
 const sum=r=>RES.reduce((a,k)=>a+(r[k]||0),0);
 const has=(r,c)=>RES.every(k=>(r[k]||0)>=(c[k]||0));
@@ -173,7 +175,8 @@ function apply(s0,actor,a){
       if(s.host===actor){const h=s.players.find(p=>!p.bot);if(!h)return null;s.host=h.id;}return s;}
     need(s.host===actor,"Это может только создатель игры");
     if(t==="addBot"){need(s.players.length<MAX_PLAYERS,"Мест нет");const used=s.players.map(p=>p.name);const name=BOT_NAMES.find(n=>!used.includes(n))||"Бот";
-      s.players.push(newPlayer("bot-"+Math.random().toString(36).slice(2,8),true,name));return s;}
+      const b=newPlayer("bot-"+Math.random().toString(36).slice(2,8),true,name);b.level=LEVELS.includes(a.level)?a.level:"medium";s.players.push(b);return s;}
+    if(t==="setBotLevel"){const b=s.players[a.i];need(b&&b.bot,"Это не бот");need(LEVELS.includes(a.level),"Неизвестная сложность");b.level=a.level;return s;}
     if(t==="setTimer"){need(TURN_TIMES.includes(a.seconds),"Неизвестный таймер");s.turnTime=a.seconds;return s;}
     if(t==="setMap"){need(MAP_SIZES.includes(a.size),"Неизвестный размер карты");s.mapSize=a.size;return s;}
     if(t==="kick"){const k=s.players[a.i];need(k&&k.id!==actor,"Нельзя");s.players.splice(a.i,1);return s;}
@@ -206,6 +209,17 @@ function apply(s0,actor,a){
     (a.yes?v.yes:v.no).push(pi);
     if(v.yes.length>=needN){s.paused=v.to;s.pauseVote=null;addLog(s,v.to?"Игра на паузе":"Игра продолжается");}
     else if(v.no.length>humans-needN){s.pauseVote=null;addLog(s,"Голосование за паузу не прошло");}
+    return s;
+  }
+  if(t==="abandon"){
+    // Игрок уходит насовсем: его место со всеми картами и постройками занимает бот средней сложности.
+    const name=(s.names&&s.names[actor])||`Игрок ${pi+1}`;
+    Object.assign(s.players[pi],{bot:true,level:"medium",name:`${name} (бот)`,id:"bot-"+Math.random().toString(36).slice(2,8)});
+    if(s.pauseVote){s.pauseVote.yes=s.pauseVote.yes.filter(i=>i!==pi);s.pauseVote.no=s.pauseVote.no.filter(i=>i!==pi);}
+    addLog(s,`${name} выходит из игры, место занимает бот @${pi}`);
+    const human=s.players.find(p=>!p.bot);
+    if(!human)return null;
+    if(s.host===actor)s.host=human.id;
     return s;
   }
   need(!s.paused,"Игра на паузе");
@@ -271,7 +285,7 @@ function apply(s0,actor,a){
     case "roll":{
       need(s.phase==="roll","Кубики уже брошены");
       const d=[1+Math.floor(Math.random()*6),1+Math.floor(Math.random()*6)],n=d[0]+d[1];
-      s.dice=d;addLog(s,`@${pi} бросает ${n}`);
+      s.dice=d;addLog(s,`@${pi} бросает #d${d[0]}-${d[1]}`);
       if(n===7){
         s.toDiscard={};s.players.forEach((p,i)=>{const c=sum(p.res);if(c>7)s.toDiscard[i]=Math.floor(c/2);});
         s.robberReturn="main";s.phase=Object.keys(s.toDiscard).length?"discard":"robber";
@@ -354,13 +368,32 @@ function apply(s0,actor,a){
 }
 
 // --- bots ---
+// Сложность: лёгкий ставит почти наугад, ленится строить и охотно меняется; средний — прежняя логика;
+// сложный учитывает свою добычу и редкие ресурсы, копит на аилы, не даёт лидеру выгодных обменов и избегает сброса на «7».
+const lvl=(s,pi)=>s.players[pi].level||"medium";
+const RES_W={wood:1,brick:1,wool:.8,grain:1.15,ore:1.15};
+function production(s,pi){
+  const pr=emptyRes();
+  for(const k in s.buildings){const b=s.buildings[k];if(b.p!==pi)continue;
+    for(const hi of gOf(s).verts[+k].hexes){const h=s.board[hi];if(h.res!=="desert")pr[h.res]+=pips(h.num)*(b.city?2:1);}}
+  return pr;
+}
 function vertexScore(s,v,pi){
-  const hs=gOf(s).verts[v].hexes.map(h=>s.board[h]).filter(h=>h.res!=="desert");
-  let sc=hs.reduce((a,h)=>a+pips(h.num),0)+new Set(hs.map(h=>h.res)).size*0.8;
-  for(const h of s.harbors){const ed=gOf(s).edges[h.e];if(ed.a===v||ed.b===v)sc+=1;}
+  const L=lvl(s,pi),hs=gOf(s).verts[v].hexes.map(h=>s.board[h]).filter(h=>h.res!=="desert");
+  if(L==="easy")return hs.reduce((a,h)=>a+pips(h.num),0)*0.5+Math.random()*6;
+  let sc;
+  if(L==="hard"){
+    const pr=production(s,pi);
+    sc=hs.reduce((a,h)=>a+pips(h.num)*RES_W[h.res]*(pr[h.res]?1:1.35),0)+new Set(hs.map(h=>h.res)).size*1.2;
+    for(const h of s.harbors){const ed=gOf(s).edges[h.e];if(ed.a===v||ed.b===v)sc+=h.type==="any"?1.2:Math.min(3,(pr[h.type]||0)/3);}
+  }else{
+    sc=hs.reduce((a,h)=>a+pips(h.num),0)+new Set(hs.map(h=>h.res)).size*0.8;
+    for(const h of s.harbors){const ed=gOf(s).edges[h.e];if(ed.a===v||ed.b===v)sc+=1;}
+  }
   return sc+Math.random()*0.3;
 }
 const best=(arr,f)=>{let b=null,bs=-Infinity;for(const x of arr){const v=f(x);if(v>bs){bs=v;b=x;}}return b;};
+const pick=arr=>arr[Math.floor(Math.random()*arr.length)];
 function bestRoad(s,pi){
   const es=roadTargets(s,pi);if(!es.length)return null;
   return best(es,e=>{const ed=gOf(s).edges[e];return Math.max(...[ed.a,ed.b].map(v=>canSettle(s,v,pi,true)?vertexScore(s,v,pi):Math.random()));});
@@ -374,15 +407,22 @@ function botPending(s){
 }
 function autoDiscard(res,n){const r={...res},out=emptyRes();for(let i=0;i<n;i++){const k=best(RES,x=>r[x]+Math.random()*0.1);r[k]--;out[k]++;}return out;}
 function robberMove(s,pi){
-  const h=best([...gOf(s).hexes.keys()].filter(i=>i!==s.robber),i=>{let sc=0;
-    for(const v of gOf(s).hexVerts[i]){const b=s.buildings[v];if(!b)continue;sc+=(b.p===pi?-8:(b.city?2:1)*(1+vp(s,b.p)/4))*pips(s.board[i].num);}return sc+Math.random();});
-  const victims=[...new Set(gOf(s).hexVerts[h].map(v=>ownerAt(s,v)).filter(o=>o>=0&&o!==pi&&sum(s.players[o].res)>0))];
-  return {type:"robber",hex:h,victim:best(victims,o=>sum(s.players[o].res))};
+  const L=lvl(s,pi),G=gOf(s),hexes=[...G.hexes.keys()].filter(i=>i!==s.robber);
+  const victimsAt=h=>[...new Set(G.hexVerts[h].map(v=>ownerAt(s,v)).filter(o=>o>=0&&o!==pi&&sum(s.players[o].res)>0))];
+  if(L==="easy"){
+    const h=pick(hexes.filter(i=>!G.hexVerts[i].some(v=>ownerAt(s,v)===pi)))??pick(hexes);
+    return {type:"robber",hex:h,victim:pick(victimsAt(h))};
+  }
+  const lead=L==="hard"?2:1;
+  const h=best(hexes,i=>{let sc=0;
+    for(const v of G.hexVerts[i]){const b=s.buildings[v];if(!b)continue;sc+=(b.p===pi?-8:(b.city?2:1)*(1+(vp(s,b.p)/4)**lead))*pips(s.board[i].num);}return sc+Math.random();});
+  return {type:"robber",hex:h,victim:best(victimsAt(h),o=>sum(s.players[o].res)+(L==="hard"?vp(s,o):0))};
 }
 function botMain(s,pi){
-  const P=s.players[pi],r=P.res,pc=countPieces(s,pi);
-  if(!s.devPlayed){
-    if(canPlayDev(s,pi,"knight")&&gOf(s).hexVerts[s.robber].some(v=>ownerAt(s,v)===pi))return {type:"dev",card:"knight"};
+  const P=s.players[pi],r=P.res,pc=countPieces(s,pi),L=lvl(s,pi);
+  if(L==="easy"&&Math.random()<0.3)return {type:"end"};
+  if(!s.devPlayed&&!(L==="easy"&&Math.random()<0.5)){
+    if(canPlayDev(s,pi,"knight")&&(gOf(s).hexVerts[s.robber].some(v=>ownerAt(s,v)===pi)||(L==="hard"&&P.knights>=2&&s.army!==pi)))return {type:"dev",card:"knight"};
     if(canPlayDev(s,pi,"road")&&pc.road<14&&roadTargets(s,pi).length)return {type:"dev",card:"road"};
     if(canPlayDev(s,pi,"mono")){const k=best(RES,x=>s.players.reduce((a,o,i)=>a+(i===pi?0:o.res[x]),0));return {type:"dev",card:"mono",res:k};}
     if(canPlayDev(s,pi,"yop")){const goal=pc.settle?COST.city:COST.settle;const miss=RES.filter(k=>(goal[k]||0)>r[k]&&s.bank[k]>0);
@@ -391,23 +431,42 @@ function botMain(s,pi){
   if(has(r,COST.city)&&pc.city<4){const cs=cityTargets(s,pi);if(cs.length)return {type:"city",v:best(cs,v=>vertexScore(s,v,pi))};}
   const sv=settleTargets(s,pi,false);
   if(has(r,COST.settle)&&sv.length&&pc.settle<5)return {type:"settle",v:best(sv,v=>vertexScore(s,v,pi))};
-  if(has(r,COST.road)&&!sv.length&&pc.road<15){const e=bestRoad(s,pi);if(e!==null)return {type:"road",e};}
-  if(has(r,COST.dev)&&s.deck.length&&Math.random()<0.5&&!(pc.settle&&r.ore>=2))return {type:"buy"};
-  if((s.turnTrades||0)<3){
+  if(has(r,COST.road)&&pc.road<15&&(!sv.length||(L==="hard"&&sv.length<2&&!has(r,{...COST.road,wool:1,grain:1})))){const e=bestRoad(s,pi);if(e!==null)return {type:"road",e};}
+  const saving=pc.settle&&cityTargets(s,pi).length&&r.ore>=2;
+  const buyP=L==="easy"?0.25:L==="hard"?(saving&&sum(r)<=7?0:1):0.5;
+  if(has(r,COST.dev)&&s.deck.length&&Math.random()<buyP&&!(L==="medium"&&pc.settle&&r.ore>=2))return {type:"buy"};
+  const maxTrades=L==="hard"?5:L==="easy"?1:3;
+  if((s.turnTrades||0)<maxTrades){
     const goal=pc.settle&&cityTargets(s,pi).length?COST.city:(sv.length?COST.settle:COST.road);
     const miss=RES.find(k=>(goal[k]||0)>r[k]&&s.bank[k]>0);
     if(miss){const give=RES.find(k=>k!==miss&&r[k]-(goal[k]||0)>=ratio(s,pi,k));if(give)return {type:"bank",give,get:miss};}
+    // Сложный не держит больше 7 карт к концу хода: лишнее меняет на то, чего меньше всего.
+    if(L==="hard"&&sum(r)>7){
+      const give=best(RES.filter(k=>r[k]>=ratio(s,pi,k)),k=>r[k]-(goal[k]||0)),get=give&&best(RES.filter(k=>k!==give&&s.bank[k]>0),k=>-r[k]);
+      if(give&&get)return {type:"bank",give,get};
+    }
   }
   return {type:"end"};
 }
+function botRespond(s,b){
+  const P=s.players[b],t=s.trade,L=lvl(s,b);
+  if(!has(P.res,t.get))return false;
+  if(L==="easy")return Math.random()<0.8;
+  if(L==="medium")return sum(t.give)>=sum(t.get)&&Math.random()<0.6;
+  // Сложный соглашается, только если обмен приближает его к цели и предлагающий не на пороге победы.
+  if(vp(s,s.cur)>=8)return false;
+  const pc=countPieces(s,b),goal=pc.settle&&cityTargets(s,b).length?COST.city:COST.settle;
+  const after={...P.res};for(const k of RES)after[k]+=(t.give[k]||0)-(t.get[k]||0);
+  const lack=x=>RES.reduce((a,k)=>a+Math.max(0,(goal[k]||0)-x[k]),0);
+  return lack(after)<lack(P.res)&&sum(t.give)>=sum(t.get);
+}
 function botAction(s,b){
   const P=s.players[b];
-  if(s.phase==="discard"&&s.toDiscard[b])return {type:"discard",sel:autoDiscard(P.res,s.toDiscard[b])};
-  if(s.trade&&b!==s.cur&&s.trade.resp[b]===undefined)
-    return {type:"respond",accept:has(P.res,s.trade.get)&&sum(s.trade.give)>=sum(s.trade.get)&&Math.random()<0.6};
+  if(s.phase==="discard"&&s.toDiscard[b])return {type:"discard",sel:lvl(s,b)==="easy"?randomPick(P.res,s.toDiscard[b]):autoDiscard(P.res,s.toDiscard[b])};
+  if(s.trade&&b!==s.cur&&s.trade.resp[b]===undefined)return {type:"respond",accept:botRespond(s,b)};
   switch(s.phase){
     case "setup":return s.step==="settle"?{type:"settle",v:best(settleTargets(s,b,true),v=>vertexScore(s,v,b))}:{type:"road",e:bestRoad(s,b)};
-    case "roll":return canPlayDev(s,b,"knight")&&gOf(s).hexVerts[s.robber].some(v=>ownerAt(s,v)===b)?{type:"dev",card:"knight"}:{type:"roll"};
+    case "roll":return canPlayDev(s,b,"knight")&&gOf(s).hexVerts[s.robber].some(v=>ownerAt(s,v)===b)&&lvl(s,b)!=="easy"?{type:"dev",card:"knight"}:{type:"roll"};
     case "robber":return robberMove(s,b);
     case "roadbuilding":{const e=bestRoad(s,b);return e===null?{type:"endRoads"}:{type:"road",e};}
     default:return botMain(s,b);
@@ -442,4 +501,4 @@ function timeoutStep(s){
   }
 }
 
-if(typeof module!=="undefined")module.exports={RES,RES_RU,COST,DEV_RU,DEV_HINT,COLORS,MAX_PLAYERS,BOARD,MAP_SIZES,TURN_TIMES,TIMER,turnKey,phaseTime,timeoutStep,mapRadius,gOf,emptyRes,sum,has,pips,newPlayer,newGame,ownerAt,countPieces,canSettle,canRoad,settleTargets,roadTargets,cityTargets,ratio,vp,resText,canPlayDev,apply,botPending,botStep};
+if(typeof module!=="undefined")module.exports={RES,RES_RU,COST,DEV_RU,DEV_HINT,COLORS,MAX_PLAYERS,LEVELS,LEVEL_RU,BOARD,MAP_SIZES,TURN_TIMES,TIMER,turnKey,phaseTime,timeoutStep,mapRadius,gOf,emptyRes,sum,has,pips,newPlayer,newGame,ownerAt,countPieces,canSettle,canRoad,settleTargets,roadTargets,cityTargets,ratio,vp,resText,canPlayDev,apply,botPending,botStep};

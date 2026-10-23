@@ -233,7 +233,9 @@ function handle(ws, msg) {
       games.set(g.code, next);
       rememberName(next, ws);
       const actor = next.players?.findIndex((p) => p.id === ws.playerId);
-      changed(g.code, next.status === "play" && actor === next.cur && msg.action?.type !== "pause");
+      // Открытие/отмена предложения обмена время не добавляет — бонус только за состоявшийся обмен (accept).
+      const noBonus = ["pause", "offer", "cancelOffer"].includes(msg.action?.type);
+      changed(g.code, next.status === "play" && actor === next.cur && !noBonus);
       return;
     }
     default:

@@ -13,7 +13,9 @@ if (!myId) {
 }
 let myName = store.get("zh.name") || "";
 // Аккаунт: токен сессии хранится в браузере, account — профиль от сервера (логин, имя, рейтинг).
+// Профиль запоминаем в браузере, чтобы после перезагрузки сразу показать его, а не мигнуть кнопкой «Войти».
 let token = store.get("zh.token") || "", account = null, tops = [];
+if (token) try { account = JSON.parse(store.get("zh.account")); } catch {}
 
 let ws = null, connected = false, retry = 0;
 let games = [], game = null, currentCode = null;
@@ -74,7 +76,7 @@ function connect() {
         // Вышли из аккаунта — дальше играем новым гостем.
         token = "";
         store.set("zh.token", "");
-        account = null;
+        setAccount(null);
         myId = newId();
         store.set("zh.id", myId);
         ws.send(JSON.stringify({ t: "hello", id: myId, name: myName }));
@@ -85,7 +87,7 @@ function connect() {
     else if (m.t === "top") {
       tops = m.top;
       const mine = account && tops.find((u) => u.login === account.login);
-      if (mine) account = { ...account, ...mine };
+      if (mine) setAccount({ ...account, ...mine });
       render();
     }
     else if (m.t === "opened") { currentCode = m.code; store.set("zh.game", m.code); if (location.hash !== "#" + m.code) history.replaceState(null, "", "#" + m.code); }
@@ -119,6 +121,7 @@ function connect() {
 }
 function setAccount(u) {
   account = u;
+  store.set("zh.account", u ? JSON.stringify(u) : "");
   if (u && u.name !== myName) { myName = u.name; store.set("zh.name", myName); }
 }
 function setConn() {

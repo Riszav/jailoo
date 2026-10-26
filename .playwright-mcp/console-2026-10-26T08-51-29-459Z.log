@@ -1,0 +1,8 @@
+[   36541ms] [ERROR] WebSocket connection to 'ws://localhost:3996/ws' failed:  @ http://localhost:3996/client.js:45
+[   37048ms] [ERROR] WebSocket connection to 'ws://localhost:3996/ws' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3996/client.js:45
+[   38052ms] [ERROR] WebSocket connection to 'ws://localhost:3996/ws' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3996/client.js:45
+[   40055ms] [ERROR] WebSocket connection to 'ws://localhost:3996/ws' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3996/client.js:45
+[   44059ms] [ERROR] WebSocket connection to 'ws://localhost:3996/ws' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3996/client.js:45
+[   52063ms] [ERROR] WebSocket connection to 'ws://localhost:3996/ws' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3996/client.js:45
+[   62069ms] [ERROR] WebSocket connection to 'ws://localhost:3996/ws' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3996/client.js:45
+[   72077ms] [ERROR] WebSocket connection to 'ws://localhost:3996/ws' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3996/client.js:45

@@ -55,6 +55,37 @@ const MAP_SIZES=["auto",2,3,4];
 const TURN_TIMES=[0,60,90,120];
 // Кубики бросаются сами через TIMER.roll секунд в любой комнате, даже без таймера хода.
 const TIMER={roll:5,discard:20,bonus:10};
+// Дополнения: создатель комнаты включает их в лобби, в партии они лежат в s.mods.
+const MODS={
+  fate:{name:"Колода судьбы",text:"Вместо кубиков — колода из 36 карт со всеми сочетаниями. Числа выпадают ровнее, удачи меньше. Когда остаётся 5 карт, колода тасуется заново."},
+  friendly:{name:"Добрый буран",text:"Буран нельзя пригнать к юртам игрока, у которого 2 очка или меньше: новичков не грабят."},
+  helpers:{name:"Помощники",text:"Каждый получает помощника с особым свойством. Со второго своего хода его можно раз за ход сменить на свободного."},
+};
+const mod=(s,k)=>!!(s&&s.mods&&s.mods[k]);
+// Помощники: свойства постоянные, решений от игрока не требуют — поэтому с ними справляются и боты.
+const HELPERS={
+  chaban:{name:"Чабан",text:"На буране сбрасываете карты, только если их больше 9, а не 7."},
+  kupets:{name:"Купец",text:"Любой ресурс меняете с запасом 3:1, даже без стоянки."},
+  temirchi:{name:"Темирчи",text:"Аил стоит на 1 зерно меньше: 1 зерно и 3 руды."},
+  usta:{name:"Уста",text:"Юрта строится без шерсти: лес, глина и зерно."},
+  aksakal:{name:"Аксакал",text:"Карта развития стоит без шерсти: зерно и руда."},
+  berkutchi:{name:"Беркутчи",text:"Буран вам не помеха: участок под бураном всё равно приносит вам ресурс."},
+  jylkychy:{name:"Жылкычы",text:"Если ваш бросок (кроме 7) ничего вам не принёс, берёте 1 ресурс, которого у вас меньше всего."},
+  karool:{name:"Кароол",text:"Бураном и «Батыром» у вас нельзя забрать карту."},
+};
+const hasHelper=(s,pi,h)=>mod(s,"helpers")&&!!s.players[pi]&&s.players[pi].helper===h;
+// Цена постройки с учётом помощника.
+function costOf(s,pi,k){
+  if(k==="city"&&hasHelper(s,pi,"temirchi"))return {grain:1,ore:3};
+  if(k==="settle"&&hasHelper(s,pi,"usta"))return {wood:1,brick:1,grain:1};
+  if(k==="dev"&&hasHelper(s,pi,"aksakal"))return {grain:1,ore:1};
+  return COST[k];
+}
+// Больше скольких карт на руке приходится сбрасывать на «7».
+const discardLimit=(s,pi)=>hasHelper(s,pi,"chaban")?9:7;
+const canRob=(s,o)=>!hasHelper(s,o,"karool");
+const fateDeck=()=>shuffle([1,2,3,4,5,6].flatMap(a=>[1,2,3,4,5,6].map(b=>[a,b])));
+const swapReady=(s,pi)=>{const P=s.players[pi];return mod(s,"helpers")&&!!P&&P.helperTurn+s.players.length<=s.turnNo;};
 const mapRadius=s=>s.mapSize&&s.mapSize!=="auto"?s.mapSize:boardSize(s.players.length);
 function makeBoard(R){
   const g=geom(R),cfg=BOARD[R];
@@ -106,6 +137,7 @@ const cityTargets=(s,pi)=>Object.keys(s.buildings).map(Number).filter(v=>s.build
 function ratio(s,pi,r){
   let best=4;
   for(const h of s.harbors){const ed=gOf(s).edges[h.e];if(ownerAt(s,ed.a)===pi||ownerAt(s,ed.b)===pi){if(h.type==="any")best=Math.min(best,3);else if(h.type===r)best=2;}}
+  if(hasHelper(s,pi,"kupets"))best=Math.min(best,3);
   return best;
 }
 function roadLen(s,pi){
@@ -149,8 +181,8 @@ function harborLog(s,pi,v){
 function pay(s,pi,c){const P=s.players[pi];for(const k of RES){P.res[k]-=(c[k]||0);s.bank[k]+=(c[k]||0);}}
 function produce(s,roll){
   const gain=s.players.map(()=>emptyRes());
-  s.board.forEach((h,hi)=>{if(h.num!==roll||hi===s.robber)return;
-    for(const v of gOf(s).hexVerts[hi]){const b=s.buildings[v];if(b)gain[b.p][h.res]+=b.city?2:1;}});
+  s.board.forEach((h,hi)=>{if(h.num!==roll)return;
+    for(const v of gOf(s).hexVerts[hi]){const b=s.buildings[v];if(b&&(hi!==s.robber||hasHelper(s,b.p,"berkutchi")))gain[b.p][h.res]+=b.city?2:1;}});
   for(const r of RES){
     const total=gain.reduce((a,g)=>a+g[r],0);if(!total)continue;
     if(total>s.bank[r]){
@@ -161,6 +193,18 @@ function produce(s,roll){
     gain.forEach((g,i)=>{s.players[i].res[r]+=g[r];s.bank[r]-=g[r];stat(s.players[i]).prod[r]+=g[r];});
   }
   gain.forEach((g,i)=>{if(sum(g))addLog(s,`@${i} получает ${resLog(g)}`);});
+  const P=s.players[s.cur];
+  if(hasHelper(s,s.cur,"jylkychy")&&!sum(gain[s.cur])){
+    const r=best(RES.filter(k=>s.bank[k]>0),k=>-P.res[k]-Math.random()*0.1);
+    if(r){P.res[r]++;s.bank[r]--;stat(P).prod[r]++;addLog(s,`Жылкычы приводит @${s.cur} %${r}`);}
+  }
+}
+// Куда можно перегнать буран: «Добрый буран» не пускает к игрокам с 2 очками и меньше, если есть другие участки.
+function robberHexes(s,pi){
+  const G=gOf(s),all=[...G.hexes.keys()].filter(i=>i!==s.robber);
+  if(!mod(s,"friendly"))return all;
+  const ok=all.filter(i=>!G.hexVerts[i].some(v=>{const o=ownerAt(s,v);return o>=0&&o!==pi&&vp(s,o)<=2;}));
+  return ok.length?ok:all;
 }
 function checkWin(s){
   if(s.status!=="play")return;
@@ -190,6 +234,7 @@ function apply(s0,actor,a){
       const b=newPlayer("bot-"+Math.random().toString(36).slice(2,8),true,name);b.level=LEVELS.includes(a.level)?a.level:"medium";s.players.push(b);return s;}
     if(t==="setBotLevel"){const b=s.players[a.i];need(b&&b.bot,"Это не бот");need(LEVELS.includes(a.level),"Неизвестная сложность");b.level=a.level;return s;}
     if(t==="setTimer"){need(TURN_TIMES.includes(a.seconds),"Неизвестный таймер");s.turnTime=a.seconds;return s;}
+    if(t==="setMod"){need(MODS[a.mod],"Неизвестное дополнение");s.mods={...s.mods,[a.mod]:!!a.on};return s;}
     if(t==="setMap"){need(MAP_SIZES.includes(a.size),"Неизвестный размер карты");s.mapSize=a.size;return s;}
     if(t==="kick"){const k=s.players[a.i];need(k&&k.id!==actor,"Нельзя");s.players.splice(a.i,1);return s;}
     if(t==="start"){
@@ -202,6 +247,8 @@ function apply(s0,actor,a){
         turnNo:1,devPlayed:false,trade:null,longest:null,army:null,dice:null,toDiscard:{},last:null,winner:null,turnTrades:0,
         rolls:Array(13).fill(0),startedAt:Date.now()});
       s.players.forEach(p=>p.st=newStats());
+      if(mod(s,"fate"))s.fate=fateDeck();
+      if(mod(s,"helpers")){const hs=shuffle(Object.keys(HELPERS));s.players.forEach(p=>{p.helper=hs.pop()||null;p.helperTurn=1;});s.helperPool=hs;}
       const shift=Math.floor(Math.random()*s.players.length);
       s.players=s.players.slice(shift).concat(s.players.slice(0,shift));
       s.players.forEach((p,i)=>p.color=COLORS[i]);
@@ -273,10 +320,10 @@ function apply(s0,actor,a){
         harborLog(s,pi,v);updateLongest(s);return s;
       }
       need(s.phase==="main","Сначала бросьте кубики");
-      need(has(P.res,COST.settle),"Не хватает ресурсов");
+      need(has(P.res,costOf(s,pi,"settle")),"Не хватает ресурсов");
       need(countPieces(s,pi).settle<5,"Юрт больше нет");
       need(canSettle(s,v,pi,false),"Здесь нельзя ставить юрту");
-      pay(s,pi,COST.settle);s.buildings[v]={p:pi,city:false};addLog(s,`@${pi} ставит юрту`);harborLog(s,pi,v);updateLongest(s);break;
+      pay(s,pi,costOf(s,pi,"settle"));s.buildings[v]={p:pi,city:false};addLog(s,`@${pi} ставит юрту`);harborLog(s,pi,v);updateLongest(s);break;
     }
     case "road":{
       const e=a.e;
@@ -298,18 +345,23 @@ function apply(s0,actor,a){
     case "endRoads":need(s.phase==="roadbuilding","Нечего завершать");s.phase="main";break;
     case "city":{
       need(s.phase==="main","Сначала бросьте кубики");
-      need(has(P.res,COST.city),"Не хватает ресурсов");
+      need(has(P.res,costOf(s,pi,"city")),"Не хватает ресурсов");
       need(countPieces(s,pi).city<4,"Аилов больше нет");
       const b=s.buildings[a.v];need(b&&b.p===pi&&!b.city,"Аил строится на месте своей юрты");
-      pay(s,pi,COST.city);b.city=true;addLog(s,`@${pi} строит аил`);break;
+      pay(s,pi,costOf(s,pi,"city"));b.city=true;addLog(s,`@${pi} строит аил`);break;
     }
     case "roll":{
       need(s.phase==="roll","Кубики уже брошены");
-      const d=[1+Math.floor(Math.random()*6),1+Math.floor(Math.random()*6)],n=d[0]+d[1];
-      s.dice=d;addLog(s,`@${pi} бросает #d${d[0]}-${d[1]}`);
+      let d;
+      if(mod(s,"fate")){
+        if(!s.fate||s.fate.length<=5){if(s.fate)addLog(s,"Колода судьбы перетасована");s.fate=fateDeck();}
+        d=s.fate.pop();
+      }else d=[1+Math.floor(Math.random()*6),1+Math.floor(Math.random()*6)];
+      const n=d[0]+d[1];
+      s.dice=d;addLog(s,`@${pi} ${mod(s,"fate")?"тянет карту":"бросает"} #d${d[0]}-${d[1]}`);
       if(s.rolls)s.rolls[n]++;if(n===7)stat(P).sevens++;
       if(n===7){
-        s.toDiscard={};s.players.forEach((p,i)=>{const c=sum(p.res);if(c>7)s.toDiscard[i]=Math.floor(c/2);});
+        s.toDiscard={};s.players.forEach((p,i)=>{const c=sum(p.res);if(c>discardLimit(s,i))s.toDiscard[i]=Math.floor(c/2);});
         s.robberReturn="main";s.phase=Object.keys(s.toDiscard).length?"discard":"robber";
         addLog(s,"Буран! Игроки с 8+ картами сбрасывают половину");
       }else{produce(s,n);s.phase="main";}
@@ -318,8 +370,9 @@ function apply(s0,actor,a){
     case "robber":{
       need(s.phase==="robber","Сейчас не время для бурана");
       need(a.hex>=0&&a.hex<gOf(s).hexes.length&&a.hex!==s.robber,"Буран нужно перегнать на другой участок");
+      need(robberHexes(s,pi).includes(a.hex),"Добрый буран: сюда нельзя — у этого игрока 2 очка или меньше");
       s.robber=a.hex;
-      const victims=[...new Set(gOf(s).hexVerts[a.hex].map(v=>ownerAt(s,v)).filter(o=>o>=0&&o!==pi&&sum(s.players[o].res)>0))];
+      const victims=[...new Set(gOf(s).hexVerts[a.hex].map(v=>ownerAt(s,v)).filter(o=>o>=0&&o!==pi&&sum(s.players[o].res)>0&&canRob(s,o)))];
       let msg=`@${pi} перегоняет буран`;
       if(victims.length){
         const vi=victims.length===1?victims[0]:a.victim;need(victims.includes(vi),"Выберите, у кого забрать карту");
@@ -333,8 +386,8 @@ function apply(s0,actor,a){
     }
     case "buy":{
       need(s.phase==="main","Сначала бросьте кубики");need(s.deck.length,"Карты развития закончились");
-      need(has(P.res,COST.dev),"Не хватает ресурсов");
-      pay(s,pi,COST.dev);P.dev.push({t:s.deck.pop(),turn:s.turnNo});stat(P).bought++;addLog(s,`@${pi} покупает карту развития`);break;
+      need(has(P.res,costOf(s,pi,"dev")),"Не хватает ресурсов");
+      pay(s,pi,costOf(s,pi,"dev"));P.dev.push({t:s.deck.pop(),turn:s.turnNo});stat(P).bought++;addLog(s,`@${pi} покупает карту развития`);break;
     }
     case "dev":{
       const c=a.card;need(c!=="vp","Летопись не разыгрывается");
@@ -378,9 +431,18 @@ function apply(s0,actor,a){
       stat(P).trades++;stat(O).trades++;addLog(s,`@${pi} и @${a.with} обменялись: ${resLog(s.trade.give)} ⇄ ${resLog(s.trade.get)}`);s.trade=null;break;
     }
     case "cancelOffer":s.trade=null;break;
+    case "swapHelper":{
+      need(mod(s,"helpers"),"Помощников в этой партии нет");
+      need(s.phase==="main","Сначала бросьте кубики");
+      need(!s.helperSwapped,"Помощника можно сменить один раз за ход");
+      need(swapReady(s,pi),"Нового помощника можно взять со следующего своего хода");
+      const k=(s.helperPool||[]).indexOf(a.h);need(k>=0,"Этот помощник занят");
+      s.helperPool.splice(k,1,P.helper);const old=P.helper;P.helper=a.h;P.helperTurn=s.turnNo;s.helperSwapped=true;
+      addLog(s,`@${pi} меняет помощника: ${HELPERS[old].name} → ${HELPERS[a.h].name}`);break;
+    }
     case "end":{
       need(s.phase==="main","Ход ещё не закончен");
-      s.trade=null;s.cur=(s.cur+1)%s.players.length;s.phase="roll";s.turnNo++;s.devPlayed=false;s.dice=null;s.turnTrades=0;
+      s.trade=null;s.cur=(s.cur+1)%s.players.length;s.phase="roll";s.turnNo++;s.devPlayed=false;s.dice=null;s.turnTrades=0;s.helperSwapped=false;
       addLog(s,`Ходит @${s.cur}`);return s;
     }
     default:throw new Error("Неизвестное действие");
@@ -429,8 +491,8 @@ function botPending(s){
 }
 function autoDiscard(res,n){const r={...res},out=emptyRes();for(let i=0;i<n;i++){const k=best(RES,x=>r[x]+Math.random()*0.1);r[k]--;out[k]++;}return out;}
 function robberMove(s,pi){
-  const L=lvl(s,pi),G=gOf(s),hexes=[...G.hexes.keys()].filter(i=>i!==s.robber);
-  const victimsAt=h=>[...new Set(G.hexVerts[h].map(v=>ownerAt(s,v)).filter(o=>o>=0&&o!==pi&&sum(s.players[o].res)>0))];
+  const L=lvl(s,pi),G=gOf(s),hexes=robberHexes(s,pi);
+  const victimsAt=h=>[...new Set(G.hexVerts[h].map(v=>ownerAt(s,v)).filter(o=>o>=0&&o!==pi&&sum(s.players[o].res)>0&&canRob(s,o)))];
   if(L==="easy"){
     const h=pick(hexes.filter(i=>!G.hexVerts[i].some(v=>ownerAt(s,v)===pi)))??pick(hexes);
     return {type:"robber",hex:h,victim:pick(victimsAt(h))};
@@ -442,6 +504,7 @@ function robberMove(s,pi){
 }
 function botMain(s,pi){
   const P=s.players[pi],r=P.res,pc=countPieces(s,pi),L=lvl(s,pi);
+  const COST={road:costOf(s,pi,"road"),settle:costOf(s,pi,"settle"),city:costOf(s,pi,"city"),dev:costOf(s,pi,"dev")};
   if(L==="easy"&&Math.random()<0.3)return {type:"end"};
   if(!s.devPlayed&&!(L==="easy"&&Math.random()<0.5)){
     if(canPlayDev(s,pi,"knight")&&(gOf(s).hexVerts[s.robber].some(v=>ownerAt(s,v)===pi)||(L==="hard"&&P.knights>=2&&s.army!==pi)))return {type:"dev",card:"knight"};
@@ -463,7 +526,7 @@ function botMain(s,pi){
     const miss=RES.find(k=>(goal[k]||0)>r[k]&&s.bank[k]>0);
     if(miss){const give=RES.find(k=>k!==miss&&r[k]-(goal[k]||0)>=ratio(s,pi,k));if(give)return {type:"bank",give,get:miss};}
     // Сложный не держит больше 7 карт к концу хода: лишнее меняет на то, чего меньше всего.
-    if(L==="hard"&&sum(r)>7){
+    if(L==="hard"&&sum(r)>discardLimit(s,pi)){
       const give=best(RES.filter(k=>r[k]>=ratio(s,pi,k)),k=>r[k]-(goal[k]||0)),get=give&&best(RES.filter(k=>k!==give&&s.bank[k]>0),k=>-r[k]);
       if(give&&get)return {type:"bank",give,get};
     }
@@ -477,7 +540,7 @@ function botRespond(s,b){
   if(L==="medium")return sum(t.give)>=sum(t.get)&&Math.random()<0.6;
   // Сложный соглашается, только если обмен приближает его к цели и предлагающий не на пороге победы.
   if(vp(s,s.cur)>=8)return false;
-  const pc=countPieces(s,b),goal=pc.settle&&cityTargets(s,b).length?COST.city:COST.settle;
+  const pc=countPieces(s,b),goal=costOf(s,b,pc.settle&&cityTargets(s,b).length?"city":"settle");
   const after={...P.res};for(const k of RES)after[k]+=(t.give[k]||0)-(t.get[k]||0);
   const lack=x=>RES.reduce((a,k)=>a+Math.max(0,(goal[k]||0)-x[k]),0);
   return lack(after)<lack(P.res)&&sum(t.give)>=sum(t.get);
@@ -523,4 +586,4 @@ function timeoutStep(s){
   }
 }
 
-if(typeof module!=="undefined")module.exports={RES,RES_RU,COST,DEV_RU,DEV_HINT,COLORS,MAX_PLAYERS,LEVELS,LEVEL_RU,BOARD,MAP_SIZES,TURN_TIMES,TIMER,turnKey,phaseTime,timeoutStep,mapRadius,gOf,emptyRes,sum,has,pips,newPlayer,newGame,ownerAt,countPieces,canSettle,canRoad,settleTargets,roadTargets,cityTargets,ratio,vp,resText,canPlayDev,apply,results,botPending,botStep};
+if(typeof module!=="undefined")module.exports={RES,RES_RU,COST,DEV_RU,DEV_HINT,COLORS,MAX_PLAYERS,LEVELS,LEVEL_RU,BOARD,MAP_SIZES,TURN_TIMES,TIMER,turnKey,phaseTime,timeoutStep,mapRadius,gOf,emptyRes,sum,has,pips,newPlayer,newGame,ownerAt,countPieces,canSettle,canRoad,settleTargets,roadTargets,cityTargets,ratio,vp,resText,canPlayDev,apply,results,MODS,HELPERS,mod,hasHelper,costOf,discardLimit,canRob,robberHexes,swapReady,botPending,botStep};

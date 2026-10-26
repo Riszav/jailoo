@@ -418,6 +418,45 @@ svg.board{width:100%;height:100%;display:block;touch-action:manipulation;filter:
   .me .tl{display:none}
 }
 
+/* дополнения в лобби и помощники в игре */
+.mods{display:flex;flex-direction:column;gap:8px}
+.modopt{display:flex;gap:10px;align-items:flex-start;text-align:left;font:inherit;font-size:13px;color:var(--muted);background:var(--surface);border:2px solid var(--line);border-radius:12px;padding:10px 12px;cursor:pointer}
+.modopt b{display:block;font-size:15px;color:var(--ink)}
+.modopt.on{border-color:var(--green);background:var(--on-bg)}
+.modopt:disabled{cursor:default}
+.modopt:not(:disabled):hover{border-color:var(--blue)}
+.modopt .tick{flex:none;width:22px;height:22px;border-radius:6px;border:2px solid var(--line);display:grid;place-items:center;font-weight:900;color:#fff;margin-top:1px}
+.modopt.on .tick{background:var(--green);border-color:var(--green)}
+.modopt:focus-visible{outline:3px solid var(--gold);outline-offset:2px}
+.hlist{font-size:13px;color:var(--muted)}
+.hlist summary{cursor:pointer;font-weight:800;color:var(--ink)}
+.hlist p{margin:6px 0}
+.hlist b{color:var(--ink)}
+.helperline{display:flex;align-items:center;gap:4px;font-size:12px;font-weight:800;color:var(--hl);margin-top:1px}
+.helperline .ic{width:14px;height:14px}
+.dc.helper{background:linear-gradient(180deg,#d9a21c,#9c6c06)}
+.helpers{display:flex;flex-direction:column;gap:6px;max-height:260px;overflow:auto}
+.hp{display:flex;gap:10px;align-items:center;justify-content:space-between;background:var(--panel2);border-radius:10px;padding:8px 10px;font-size:13px}
+.hp b{display:block;font-size:14px}
+
+/* колода судьбы: стопка рубашкой вверх и вытянутая карта вместо кубиков */
+.fate{display:flex;gap:8px;align-items:center;margin-left:auto}
+.timer+.fate{margin-left:6px}
+.fdeck{position:relative;width:34px;height:46px;border-radius:6px;background:repeating-linear-gradient(45deg,#2a4a80 0 4px,#1f3a68 4px 8px);box-shadow:0 0 0 2px var(--gold),3px 3px 0 -1px #1f3a68,3px 3px 0 1px var(--gold);display:grid;place-items:center;color:var(--gold)}
+.fdeck .ic{width:18px;height:18px}
+.fdeck b{position:absolute;bottom:-8px;right:-10px;min-width:22px;height:20px;padding:0 5px;border-radius:999px;background:var(--navy);color:#fff;font-size:11px;font-weight:900;display:grid;place-items:center;box-shadow:0 0 0 2px var(--panel)}
+.fcard{display:inline-flex;flex-direction:column;align-items:center;justify-content:space-between;width:46px;height:62px;padding:4px 3px;border-radius:8px;background:linear-gradient(180deg,#fffaf0,#f3e6c4);box-shadow:0 0 0 2px var(--gold),0 3px 6px rgba(0,0,0,.25);color:#2a2418;vertical-align:middle}
+.fcard>b{font-size:24px;font-weight:900;line-height:1.1;color:#2a2418}
+.fcard.seven>b{color:#c62f22}
+.fcard .fd{display:flex;gap:2px}
+.fcard .die{width:16px;height:16px;padding:2px;border-radius:3px;gap:1px;box-shadow:0 0 0 1px #d9cfb5;background:#fff}
+.fcard .die i.p{background:#2a2418}
+.fcard .die.r i.p{background:#c62f22}
+.fcard.mini{width:24px;height:32px;padding:0;border-radius:5px;justify-content:center;margin:0 2px;box-shadow:0 0 0 2px var(--gold)}
+.fcard.mini>b{font-size:15px}
+.fate.fresh .fcard{animation:fateflip .7s ease-out}
+@keyframes fateflip{0%{transform:translateX(-40px) rotateY(180deg) scale(.7);opacity:0}60%{transform:translateX(0) rotateY(-10deg) scale(1.1);opacity:1}100%{transform:none}}
+
 @media (max-width:960px){
   .roomgrid{grid-template-columns:minmax(0,1fr)}
   .game{grid-template-columns:minmax(0,1fr);grid-template-rows:none;height:auto;min-height:100dvh;align-content:start}

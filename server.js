@@ -96,6 +96,11 @@ function viewFor(game, viewerId) {
   }
   v.deckCount = v.deck.length;
   v.deck = [];
+  // Порядок колоды судьбы — секрет, игрокам видно только, сколько карт осталось.
+  if (v.fate) {
+    v.fateCount = v.fate.length;
+    delete v.fate;
+  }
   return v;
 }
 
@@ -106,6 +111,7 @@ function summary(g) {
     createdAt: g.createdAt,
     host: g.host,
     players: g.players.map((p, i) => ({ id: p.id, bot: p.bot, name: p.bot ? p.name : g.names?.[p.id] || `Игрок ${i + 1}` })),
+    mods: Object.keys(g.mods || {}).filter((k) => g.mods[k]),
   };
 }
 
@@ -385,7 +391,7 @@ function rate(g) {
     persist("users", a.u.id, a.u);
   }
   persist("results", g.code, {
-    code: g.code, startedAt: g.startedAt, endedAt: g.endedAt || Date.now(), size: g.size, turns: g.turnNo,
+    code: g.code, startedAt: g.startedAt, endedAt: g.endedAt || Date.now(), size: g.size, turns: g.turnNo, mods: g.mods || {},
     players: seats.map(({ r, u }) => {
       const p = g.players[r.i];
       return { name: p.bot ? p.name : g.names?.[p.id] || u?.name || `Игрок ${r.i + 1}`, uid: u?.id || null, bot: p.bot, place: r.place, vp: r.vp, delta: g.ratings[r.i]?.delta ?? null };

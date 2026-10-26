@@ -183,7 +183,7 @@ const nameOf = (s, i) => {
   if (p.bot) return p.name;
   return (s.names && s.names[p.id]) || `Игрок ${i + 1}`;
 };
-const victimsOf = (s, h, me) => [...new Set(gOf(s).hexVerts[h].map((v) => ownerAt(s, v)).filter((o) => o >= 0 && o !== me && cnt(s.players[o]) > 0))];
+const victimsOf = (s, h, me) => [...new Set(gOf(s).hexVerts[h].map((v) => ownerAt(s, v)).filter((o) => o >= 0 && o !== me && cnt(s.players[o]) > 0 && canRob(s, o)))];
 
 const ICON = (id) => `<svg class="ic" aria-hidden="true"><use href="#i-${id}"/></svg>`;
 const initial = (n) => (String(n || "?").trim()[0] || "?").toUpperCase();
@@ -289,7 +289,7 @@ function renderLobby() {
   const mine = games.filter(isMine);
   const row = (g, label, cls) => `<div class="room"><span class="code">${esc(g.code)}</span>
     <span class="avatars">${g.players.map((p, i) => ava(p.name, COLORS[i], "sm")).join("")}</span>
-    <span class="names">${g.status === "lobby" ? '<span class="badge">ждёт игроков</span> ' : ""}${g.players.map((p) => esc(p.name)).join(", ")}</span>
+    <span class="names">${g.status === "lobby" ? '<span class="badge">ждёт игроков</span> ' : ""}${(g.mods || []).map((k) => `<span class="badge" title="${esc(MODS[k]?.text || "")}">${esc(MODS[k]?.name || k)}</span> `).join("")}${g.players.map((p) => esc(p.name)).join(", ")}</span>
     <span class="seats">${g.players.length}/${MAX_PLAYERS}</span>
     <span class="row"><button class="btn small ${cls}" data-open="${esc(g.code)}">${label}</button>${g.host === myId ? delBtn(g.code, true) : ""}</span></div>`;
   const steps = [
@@ -355,6 +355,11 @@ function renderRoom() {
     const sel = (s.turnTime ?? 0) === t;
     return `<button class="topt ${sel ? "on" : ""}" data-timer="${t}" aria-pressed="${sel}" ${host ? "" : "disabled"}>${t ? (t < 120 ? `${t} с` : `${t / 60} мин`) : "Без таймера"}</button>`;
   }).join("");
+  const mods = Object.entries(MODS).map(([k, m]) => {
+    const on = mod(s, k);
+    return `<button class="modopt ${on ? "on" : ""}" data-mod="${k}" aria-pressed="${on}" ${host ? "" : "disabled"}><span class="tick" aria-hidden="true">${on ? "✓" : ""}</span><span><b>${m.name}</b>${m.text}</span></button>`;
+  }).join("");
+  const helperList = mod(s, "helpers") ? `<details class="hlist"><summary>Какие бывают помощники</summary>${Object.values(HELPERS).map((h) => `<p><b>${h.name}</b> — ${h.text}</p>`).join("")}</details>` : "";
   document.title = `Игра ${s.code} — Жайлоо`;
   document.body.classList.remove("ingame");
   const link = `${location.origin}${location.pathname}#${s.code}`;
@@ -378,7 +383,9 @@ function renderRoom() {
       <div class="maps">${maps}</div>
       <h3>Таймер хода</h3>
       <div class="topts">${timers}</div>
-      <p class="hint">${host ? "" : "Карту и таймер выбирает создатель комнаты. "}Кубики бросаются сами через ${TIMER.roll} с. С таймером на сброс карт даётся ${TIMER.discard} с, каждое действие в ход добавляет ${TIMER.bonus} с. Время вышло — ход доигрывается автоматически.</p>
+      <h3>Дополнения</h3>
+      <div class="mods">${mods}</div>${helperList}
+      <p class="hint">${host ? "" : "Карту, таймер и дополнения выбирает создатель комнаты. "}Кубики бросаются сами через ${TIMER.roll} с. С таймером на сброс карт даётся ${TIMER.discard} с, каждое действие в ход добавляет ${TIMER.bonus} с. Время вышло — ход доигрывается автоматически.</p>
       ${tooMany ? `<p class="warn">${cfg.name} карта рассчитана максимум на ${cfg.maxPlayers} игроков — выберите карту побольше или уберите лишних.</p>` : ""}
       ${me < 0 ? `<button class="btn green big" data-a="join" ${s.players.length >= MAX_PLAYERS || !myName ? "disabled" : ""}>Сесть за стол</button>` : ""}
       ${me < 0 && !myName ? `<p class="hint">Чтобы сесть за стол, укажите имя слева.</p>` : ""}
@@ -401,14 +408,14 @@ function targets(s, me) {
     if (s.step === "settle") addV(settleTargets(s, me, true), "settle");
     else roadTargets(s, me).forEach((e) => t.e.add(e));
   } else if (s.phase === "robber") {
-    for (let i = 0; i < gOf(s).hexes.length; i++) if (i !== s.robber) t.h.add(i);
+    robberHexes(s, me).forEach((i) => t.h.add(i));
   } else if (s.phase === "roadbuilding") roadTargets(s, me).forEach((e) => t.e.add(e));
   else if (s.phase === "main") {
     const P = s.players[me], pc = countPieces(s, me), m = ui.mode;
     t.soft = !m;
-    if (m === "road" || (!m && has(P.res, COST.road) && pc.road < 15)) roadTargets(s, me).forEach((e) => t.e.add(e));
-    if (m === "settle" || (!m && has(P.res, COST.settle) && pc.settle < 5)) addV(settleTargets(s, me, false), "settle");
-    if (m === "city" || (!m && has(P.res, COST.city) && pc.city < 4)) addV(cityTargets(s, me), "city");
+    if (m === "road" || (!m && has(P.res, costOf(s, me, "road")) && pc.road < 15)) roadTargets(s, me).forEach((e) => t.e.add(e));
+    if (m === "settle" || (!m && has(P.res, costOf(s, me, "settle")) && pc.settle < 5)) addV(settleTargets(s, me, false), "settle");
+    if (m === "city" || (!m && has(P.res, costOf(s, me, "city")) && pc.city < 4)) addV(cityTargets(s, me), "city");
   }
   return t;
 }
@@ -499,23 +506,29 @@ const resChip = (k, n = 1) => `<span class="lr r-${k}" title="${RES_RU[k]}${n > 
 const resChips = (r) => RES.filter((k) => r[k]).map((k) => resChip(k, r[k])).join("") || '<span class="muted">ничего</span>';
 const deal = (l1, give, l2, get) => `<div class="deal"><div><span class="lbl">${l1}</span><span class="chips">${resChips(give)}</span></div><span class="arr" aria-hidden="true">→</span><div><span class="lbl">${l2}</span><span class="chips">${resChips(get)}</span></div></div>`;
 // Бросок в журнале — токен «#d3-4»: рисуем два кубика и сумму, строку выделяем; семёрка — красным, это буран.
-// Старые записи «бросает 8» без кубиков выделяем так же, только по сумме.
-const ROLL_RE = /бросает (?:#d(\d)-(\d)|(\d+)$)/;
+// Старые записи «бросает 8» без кубиков выделяем так же, только по сумме. С колодой судьбы — «тянет карту #d3-4».
+const ROLL_RE = /(бросает|тянет карту) (?:#d(\d)-(\d)|(\d+)$)/;
 const logClass = (t) => {
   const m = ROLL_RE.exec(t);
   if (!m) return "";
-  return ` class="roll ${(m[3] ? +m[3] : +m[1] + +m[2]) === 7 ? "seven" : ""}"`;
+  return ` class="roll ${(m[4] ? +m[4] : +m[2] + +m[3]) === 7 ? "seven" : ""}"`;
 };
-const rollHTML = (a, b, n) => `бросает ${a ? die(+a, false) + die(+b, true) : ""}<b class="rsum">${n}</b>`;
+const rollHTML = (verb, a, b, n) => verb === "бросает"
+  ? `бросает ${a ? die(+a, false) + die(+b, true) : ""}<b class="rsum">${n}</b>`
+  : `тянет карту ${fateCard(+a, +b, "mini")}`;
+// Карта колоды судьбы: крупная сумма, под ней — какие кубики она заменяет.
+// В журнале карта маленькая — только сумма, без кубиков.
+const fateCard = (a, b, cls = "", st = "") => `<span class="fcard ${cls} ${a + b === 7 ? "seven" : ""}" ${st} title="Карта судьбы: ${a} + ${b}"><b>${a + b}</b>${cls === "mini" ? "" : `<span class="fd">${die(a, false)}${die(b, true)}</span>`}</span>`;
 // В журнале ресурсы приходят токенами «2%wood», украденная карта — «%?id»: её видят только вор и жертва.
 const fmtLog = (s, t) => esc(t)
-  .replace(ROLL_RE, (_, a, b, n) => rollHTML(a, b, n || +a + +b))
+  .replace(ROLL_RE, (_, verb, a, b, n) => rollHTML(verb, a, b, n || +a + +b))
   .replace(/%\?(\d+)/g, (_, id) => (s.steals?.[id]?.r ? resChip(s.steals[id].r) : `<span class="lr r-hidden" title="Карта скрыта">${ICON("card")}</span>`))
   .replace(/(\d+)?%(wood|brick|wool|grain|ore)/g, (_, n, k) => resChip(k, n === undefined ? 1 : +n))
   .replace(/@(\d)/g, (_, i) => (s.players[+i] ? `<b class="who" style="background:${s.players[+i].color};color:${inkOn(s.players[+i].color)}">` : "<b>") + `${esc(nameOf(s, +i))}</b>`);
 const PIPS = { 1: [4], 2: [0, 8], 3: [0, 4, 8], 4: [0, 2, 6, 8], 5: [0, 2, 4, 6, 8], 6: [0, 2, 3, 5, 6, 8] };
 const die = (n, red, st = "") => `<span class="die ${red ? "r" : ""}" aria-label="${n}" ${st}>${Array.from({ length: 9 }, (_, i) => `<i${PIPS[n].includes(i) ? ' class="p"' : ""}></i>`).join("")}</span>`;
 const pop = (title, body, closable) => `<div class="panel pop"><div class="pop-h"><b>${title}</b>${closable ? `<button class="x" data-panel="" aria-label="Закрыть">×</button>` : ""}</div>${body}</div>`;
+const canSwap = (s, me) => me >= 0 && me === s.cur && s.status === "play" && !s.paused && s.phase === "main" && !s.helperSwapped && swapReady(s, me) && (s.helperPool || []).length > 0;
 const devPlayable = (s, me, t) => t !== "vp" && me >= 0 && me === s.cur && s.status === "play" && !s.paused && canPlayDev(s, me, t) && (s.phase === "main" || (t === "knight" && s.phase === "roll"));
 const DEV_DESC = {
   knight: "Перегоните буран на любой участок и заберите случайную карту у игрока, чья юрта или аил стоит на его углу. Три сыгранных батыра дают «Сильнейшую дружину» — 2 очка. Можно сыграть и до броска кубиков.",
@@ -550,7 +563,9 @@ function phaseHint(s, me) {
   if (s.paused) return "Игра на паузе";
   switch (s.phase) {
     case "setup": return mine ? (s.step === "settle" ? "Поставьте юрту на свободный угол — доступные места подсвечены" : "Проложите тропу от новой юрты") : `${cur} расставляет стартовые юрты`;
-    case "roll": return mine ? "Бросьте кубики! «Батыра» можно сыграть до броска" : `${cur} бросает кубики`;
+    case "roll":
+      if (mod(s, "fate")) return mine ? "Тяните карту судьбы! «Батыра» можно сыграть до этого" : `${cur} тянет карту судьбы`;
+      return mine ? "Бросьте кубики! «Батыра» можно сыграть до броска" : `${cur} бросает кубики`;
     case "discard": return s.toDiscard[me] ? `Буран: сбросьте ${s.toDiscard[me]} карт` : "Ждём, пока игроки сбросят карты";
     case "robber": return mine ? "Перегоните буран: нажмите на участок поля" : `${cur} перегоняет буран`;
     case "roadbuilding": return mine ? `Караван: осталось бесплатных троп — ${s.freeRoads}` : `${cur} прокладывает тропы каравана`;
@@ -612,6 +627,11 @@ function renderGame() {
     const t = ui.panel.slice(5), why = devBlock(s, me, t);
     pops.push(pop(`«${DEV_RU[t]}»`, `<p class="desc">${DEV_DESC[t]}</p>${why ? `<p class="hint" style="margin:0">${why}</p>` : ""}`, true));
   }
+  if (ui.panel === "helper" && P && P.helper) {
+    const H = HELPERS[P.helper], pool = s.helperPool || [], ok = canSwap(s, me);
+    const why = !pool.length ? "Свободных помощников нет — все разобраны." : me !== s.cur ? "Сменить помощника можно в свой ход." : s.phase !== "main" ? "Сменить можно после броска кубиков." : s.helperSwapped ? "В этот ход помощник уже сменён." : !swapReady(s, me) ? "Нового помощника можно взять со следующего своего хода." : "";
+    pops.push(pop(`Помощник: ${esc(H.name)}`, `<p class="desc">${esc(H.text)}</p>${pool.length ? `<h4>Свободные помощники</h4><div class="helpers">${pool.map((h) => `<div class="hp"><span><b>${esc(HELPERS[h].name)}</b>${esc(HELPERS[h].text)}</span><button class="btn small green" data-swap="${h}" ${ok ? "" : "disabled"}>Взять</button></div>`).join("")}</div>` : ""}${why ? `<p class="hint" style="margin:0">${why}</p>` : ""}`, true));
+  }
   if (ui.panel === "legend") pops.push(pop("Как читать поле", legendHTML(), true));
 
   let hud;
@@ -631,7 +651,8 @@ function renderGame() {
       const ok = devPlayable(s, me, t), key = (ok ? "dev:" : "info:") + t;
       return `<button class="dc ${ok ? "can" : ""} ${ui.panel === key ? "sel" : ""}" data-panel="${key}" title="${DEV_RU[t]} — ${DEV_HINT[t]}">${ICON("card")}<span class="lb">${DEV_RU[t]}</span><span class="n">${devCounts[t]}</span></button>`;
     }).join("");
-    const warn = total > 7 ? `<span class="warn7" title="При броске 7 у вас сбросится половина карт">${ICON("cards")}${total} карт — на «7» сбросите ${Math.floor(total / 2)}</span>` : "";
+    const lim = discardLimit(s, me), over = total > lim;
+    const warn = over ? `<span class="warn7" title="При броске 7 у вас сбросится половина карт">${ICON("cards")}${total} карт — на «7» сбросите ${Math.floor(total / 2)}</span>` : "";
     const can = mine && s.phase === "main";
     const pc = countPieces(s, me);
     const ab = (attr, icon, label, ok, extra = "", cls = "", title = label) => `<button class="ab ${cls}" ${attr} ${ok ? "" : "disabled"} title="${esc(title)}">${ICON(icon)}<span class="lb">${label}</span>${extra}</button>`;
@@ -643,15 +664,16 @@ function renderGame() {
     };
     const acts = [
       ab('data-panel="trade"', "trade", "Обмен", can && !s.trade, "", ui.panel === "trade" ? "on" : ""),
-      ab('data-a="buy"', "card", "Карта", can && has(P.res, COST.dev) && (s.deckCount ?? 0) > 0, costHTML(COST.dev), "", `Карта развития. Цена: ${resText(COST.dev)}. В колоде: ${s.deckCount ?? 0}`),
-      mode("road", "road", "Тропа", COST.road, 15, pc.road),
-      mode("settle", "yurt", "Юрта", COST.settle, 5, pc.settle, pc.settle >= 5 ? "все 5 юрт стоят: улучшите юрту до аила, и она вернётся к вам" : ""),
-      mode("city", "ail", "Аил", COST.city, 4, pc.city, pc.city < 4 && !cityTargets(s, me).length ? "аил ставится на место вашей юрты, а свободных юрт на поле нет" : ""),
+      ab('data-a="buy"', "card", "Карта", can && has(P.res, costOf(s, me, "dev")) && (s.deckCount ?? 0) > 0, costHTML(costOf(s, me, "dev")), "", `Карта развития. Цена: ${resText(costOf(s, me, "dev"))}. В колоде: ${s.deckCount ?? 0}`),
+      mode("road", "road", "Тропа", costOf(s, me, "road"), 15, pc.road),
+      mode("settle", "yurt", "Юрта", costOf(s, me, "settle"), 5, pc.settle, pc.settle >= 5 ? "все 5 юрт стоят: улучшите юрту до аила, и она вернётся к вам" : ""),
+      mode("city", "ail", "Аил", costOf(s, me, "city"), 4, pc.city, pc.city < 4 && !cityTargets(s, me).length ? "аил ставится на место вашей юрты, а свободных юрт на поле нет" : ""),
       mine && s.phase === "roll"
-        ? ab('data-a="roll"', "dice", "Бросить кубики", true, "", "go pulse")
+        ? mod(s, "fate") ? ab('data-a="roll"', "fate", "Тянуть карту", true, "", "go pulse", "Тянуть карту из колоды судьбы") : ab('data-a="roll"', "dice", "Бросить кубики", true, "", "go pulse")
         : ab('data-a="end"', "end", "Завершить ход", can && !s.trade, "", "go"),
     ].join("");
-    hud = `<div class="panel hand ${total > 7 ? "over7" : ""}">${warn}${cards}${devs ? `<span class="sep"></span>${devs}` : ""}</div><div class="panel acts">${acts}</div>`;
+    const helper = P.helper && HELPERS[P.helper] ? `<span class="sep"></span><button class="dc helper ${ui.panel === "helper" ? "sel" : ""} ${canSwap(s, me) ? "can" : ""}" data-panel="helper" title="${esc(HELPERS[P.helper].name)} — ${esc(HELPERS[P.helper].text)}">${ICON("users")}<span class="lb">${esc(HELPERS[P.helper].name)}</span></button>` : "";
+    hud = `<div class="panel hand ${over ? "over7" : ""}">${warn}${cards}${devs ? `<span class="sep"></span>${devs}` : ""}${helper}</div><div class="panel acts">${acts}</div>`;
   } else {
     const mySeat = s.status === "play" ? s.players.findIndex((p) => p.bot && p.was === myId) : -1;
     hud = mySeat >= 0
@@ -660,14 +682,19 @@ function renderGame() {
   }
 
   const rollFx = fxOn(fx.roll) ? fx.roll : null, dst = rollFx ? fxDelay(rollFx) : "";
-  const dice = s.dice ? `<span class="dice ${rollFx ? "fresh" : ""}">${die(s.dice[0], false, dst)}${die(s.dice[1], true, dst)}<span class="dsum">${s.dice[0] + s.dice[1]}</span></span>` : "";
-  const timerTitle = s.phase === "roll" ? "Кубики бросятся сами, когда время выйдет" : s.phase === "discard" ? "Время на сброс карт — потом сбросятся случайные" : `Время хода; каждое действие добавляет ${TIMER.bonus} с`;
+  // С колодой судьбы вместо кубиков — стопка рубашкой вверх (сколько карт осталось) и последняя вытянутая карта.
+  const left = s.fateCount ?? s.fate?.length ?? 36;
+  const dice = mod(s, "fate")
+    ? `<span class="fate ${rollFx ? "fresh" : ""}"><span class="fdeck" title="Колода судьбы — осталось ${left} ${plural(left, "карта", "карты", "карт")}, перетасуется, когда останется 5">${ICON("fate")}<b>${left}</b></span>${s.dice ? fateCard(s.dice[0], s.dice[1], "", dst) : ""}</span>`
+    : s.dice ? `<span class="dice ${rollFx ? "fresh" : ""}">${die(s.dice[0], false, dst)}${die(s.dice[1], true, dst)}<span class="dsum">${s.dice[0] + s.dice[1]}</span></span>` : "";
+  const timerTitle = s.phase === "roll" ? (mod(s, "fate") ? "Карта вытянется сама, когда время выйдет" : "Кубики бросятся сами, когда время выйдет") : s.phase === "discard" ? "Время на сброс карт — потом сбросятся случайные" : `Время хода; каждое действие добавляет ${TIMER.bonus} с`;
   const timer = timerEnd != null && s.status === "play" ? `<span class="timer ${s.paused ? "paused" : ""}" id="timer" title="${timerTitle}">${ICON("clock")}<b></b></span>` : "";
   const turnExtra = mine && s.phase === "roadbuilding" ? `<button class="btn small" data-a="endRoads">Закончить караван</button>` : "";
   const players = s.players.map((p, i) => `<div class="pl ${i === s.cur && s.status === "play" ? "cur" : ""}" style="--pc:${p.color}">
       ${ava(nameOf(s, i), p.color)}
       <div style="min-width:0"><div class="nm"><span>${esc(nameOf(s, i))}</span>${i === me ? '<span class="badge">вы</span>' : ""}${p.bot ? `<span class="badge" title="Бот — сложность: ${LEVEL_RU[p.level || "medium"]}">бот · ${LEVEL_RU[p.level || "medium"]}</span>` : ""}${s.phase === "discard" && s.toDiscard[i] ? '<span class="badge gold">сбрасывает</span>' : ""}</div>
-        <div class="pstats"><span class="${cnt(p) > 7 ? "danger" : ""}" title="Карт ресурсов${cnt(p) > 7 ? " — больше 7: на «7» сбросит половину" : ""}">${ICON("cards")}${cnt(p)}</span><span title="Карт развития">${ICON("card")}${devCnt(p)}</span>
+        ${p.helper && HELPERS[p.helper] ? `<div class="helperline" title="${esc(HELPERS[p.helper].name)} — ${esc(HELPERS[p.helper].text)}">${ICON("users")}${esc(HELPERS[p.helper].name)}</div>` : ""}
+        <div class="pstats"><span class="${cnt(p) > discardLimit(s, i) ? "danger" : ""}" title="Карт ресурсов${cnt(p) > discardLimit(s, i) ? ` — больше ${discardLimit(s, i)}: на «7» сбросит половину` : ""}">${ICON("cards")}${cnt(p)}</span><span title="Карт развития">${ICON("card")}${devCnt(p)}</span>
           <span class="${s.army === i ? "hl" : ""}" title="Сыграно батыров${s.army === i ? " · Сильнейшая дружина" : ""}">${ICON("sword")}${p.knights}</span>
           <span class="${s.longest === i ? "hl" : ""}" title="Длина пути${s.longest === i ? " · Великий путь" : ""}">${ICON("road")}${p.road}</span></div></div>
       <span class="vp" title="Победные очки">${vp(s, i, i === me || s.status === "over")}<small>очк.</small></span></div>`).join("");
@@ -730,7 +757,7 @@ function summaryHTML(s, me) {
   const table = `<div class="tablewrap"><table class="sumtable"><thead><tr><th>Место</th><th>Игрок</th><th>Очки</th><th title="Ресурсы, пришедшие с кубиков">Урожай</th><th title="С игроками / с запасом">Обмены</th><th title="Куплено / сыграно карт развития">Развитие</th><th title="Отнял / потерял / сбросил на буране">Буран</th><th>Рейтинг</th></tr></thead><tbody>
     ${rows.map((r) => { const p = s.players[r.i], t = st(r); return `<tr class="${r.i === me ? "mine" : ""}">
       <td class="pl-n">${r.place <= 3 ? `<span class="medal m${r.place}">${r.place}</span>` : r.place}</td>
-      <td><span class="who2">${ava(nm(r.i), p.color, "sm")}<span>${esc(nm(r.i))}${p.bot && !p.was ? `<small>бот · ${LEVEL_RU[p.level || "medium"]}</small>` : p.was ? "<small>доигрывал бот</small>" : ""}</span></span></td>
+      <td><span class="who2">${ava(nm(r.i), p.color, "sm")}<span>${esc(nm(r.i))}${p.bot && !p.was ? `<small>бот · ${LEVEL_RU[p.level || "medium"]}</small>` : p.was ? "<small>доигрывал бот</small>" : ""}${p.helper && HELPERS[p.helper] ? `<small title="${esc(HELPERS[p.helper].text)}">помощник: ${esc(HELPERS[p.helper].name)}</small>` : ""}</span></span></td>
       <td><b class="bigvp">${r.vp}</b><span class="vps">${vpParts(r)}</span></td>
       <td><b>${prodSum(r)}</b>${t.prod ? `<span class="chips">${resChips(t.prod)}</span>` : ""}</td>
       <td class="tn">${t.trades ?? "—"} / ${t.bank ?? "—"}</td>
@@ -741,9 +768,9 @@ function summaryHTML(s, me) {
   let dice = "";
   if (s.rolls) {
     const max = Math.max(1, ...s.rolls.slice(2)), total = s.rolls.reduce((a, b) => a + b, 0);
-    dice = `<h4>Кубики · ${total} ${plural(total, "бросок", "броска", "бросков")}</h4><div class="dicebars" role="img" aria-label="Сколько раз выпало каждое число">${s.rolls.slice(2).map((c, k) => `<div class="db ${k + 2 === 7 ? "seven" : ""}" title="${k + 2} — выпало ${c} раз"><span class="c">${c}</span><i style="height:${Math.round((c / max) * 100)}%"></i><span class="n">${k + 2}</span></div>`).join("")}</div>`;
+    dice = `<h4>${mod(s, "fate") ? `Колода судьбы · ${total} ${plural(total, "карта", "карты", "карт")}` : `Кубики · ${total} ${plural(total, "бросок", "броска", "бросков")}`}</h4><div class="dicebars" role="img" aria-label="Сколько раз выпало каждое число">${s.rolls.slice(2).map((c, k) => `<div class="db ${k + 2 === 7 ? "seven" : ""}" title="${k + 2} — выпало ${c} раз"><span class="c">${c}</span><i style="height:${Math.round((c / max) * 100)}%"></i><span class="n">${k + 2}</span></div>`).join("")}</div>`;
   }
-  const info = [s.turnNo && `${s.turnNo} ${plural(s.turnNo, "ход", "хода", "ходов")}`, s.startedAt && s.endedAt && fmtDur(s.endedAt - s.startedAt), BOARD[s.size]?.name && `${BOARD[s.size].name.toLowerCase()} карта`].filter(Boolean).join(" · ");
+  const info = [s.turnNo && `${s.turnNo} ${plural(s.turnNo, "ход", "хода", "ходов")}`, s.startedAt && s.endedAt && fmtDur(s.endedAt - s.startedAt), BOARD[s.size]?.name && `${BOARD[s.size].name.toLowerCase()} карта`, ...Object.keys(MODS).filter((k) => mod(s, k)).map((k) => MODS[k].name)].filter(Boolean).join(" · ");
   const my = me >= 0 && s.ratings?.[me];
   return `<div class="over sum"><div class="panel">
     <div class="sum-h">${ava(nm(s.winner), W.color)}<div><span class="w">${s.winner === me ? "Вы победили!" : `${esc(nm(s.winner))} побеждает!`}</span><span class="muted">${info}</span></div></div>
@@ -984,6 +1011,8 @@ document.addEventListener("click", async (ev) => {
     if (confirm(`Удалить игру ${d.del}? Партия исчезнет у всех игроков, вернуть её нельзя.`)) send({ t: "delete", code: d.del });
     return;
   }
+  if (d.mod) return act({ type: "setMod", mod: d.mod, on: !mod(s, d.mod) });
+  if (d.swap) { ui.panel = null; return act({ type: "swapHelper", h: d.swap }); }
   if (d.map) return act({ type: "setMap", size: d.map === "auto" ? "auto" : +d.map });
   if (d.zoom) {
     const svg = document.querySelector("svg.board");

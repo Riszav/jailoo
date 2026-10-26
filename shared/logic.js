@@ -72,6 +72,10 @@ function makeBoard(R){
   return {board,harbors,robber:board.findIndex(b=>b.res==="desert")};
 }
 
+// Статистика игрока для итогов партии: prod — ресурсы с кубиков, disc — сброшено на буране, steal/robbed — карт забрал/потерял
+// (буран, батыр, «Ярмарка»), trades — обмены с игроками, bank — с запасом, bought/played — карты развития, sevens — выброшено «7».
+const newStats=()=>({prod:emptyRes(),disc:0,steal:0,robbed:0,trades:0,bank:0,bought:0,played:0,sevens:0});
+const stat=P=>P.st||(P.st=newStats());
 function newPlayer(id,bot,name){return {id,bot,name:name||"",color:"",res:emptyRes(),dev:[],knights:0,road:0};}
 function newGame(code,hostId){return {code,status:"lobby",host:hostId,createdAt:Date.now(),players:[newPlayer(hostId,false)],seq:0,log:[],turnTime:90};}
 
@@ -154,13 +158,21 @@ function produce(s,roll){
       if(recv>1){addLog(s,`В запасе мало %${r} — никто его не получает`);gain.forEach(g=>g[r]=0);continue;}
       gain.forEach(g=>{if(g[r])g[r]=s.bank[r];});
     }
-    gain.forEach((g,i)=>{s.players[i].res[r]+=g[r];s.bank[r]-=g[r];});
+    gain.forEach((g,i)=>{s.players[i].res[r]+=g[r];s.bank[r]-=g[r];stat(s.players[i]).prod[r]+=g[r];});
   }
   gain.forEach((g,i)=>{if(sum(g))addLog(s,`@${i} получает ${resLog(g)}`);});
 }
 function checkWin(s){
   if(s.status!=="play")return;
-  if(vp(s,s.cur,true)>=10){s.status="over";s.winner=s.cur;addLog(s,`@${s.cur} побеждает с ${vp(s,s.cur,true)} очками!`);}
+  if(vp(s,s.cur,true)>=10){s.status="over";s.winner=s.cur;s.endedAt=Date.now();addLog(s,`@${s.cur} побеждает с ${vp(s,s.cur,true)} очками!`);}
+}
+// Итоги партии: места по очкам (с «Летописями»), разбивка очков и статистика каждого игрока.
+function results(s){
+  const rows=s.players.map((p,i)=>{const pc=countPieces(s,i),chron=p.dev.filter(d=>d.t==="vp").length;
+    return {i,vp:vp(s,i,true),settle:pc.settle,city:pc.city,road:pc.road,longest:s.longest===i,army:s.army===i,chron,knights:p.knights,roadLen:p.road,st:stat(p)};});
+  const order=[...rows].sort((a,b)=>(b.i===s.winner)-(a.i===s.winner)||b.vp-a.vp);
+  order.forEach((r,k)=>r.place=k&&order[k-1].vp===r.vp&&r.i!==s.winner&&order[k-1].i!==s.winner?order[k-1].place:k+1);
+  return order;
 }
 const canPlayDev=(s,pi,t)=>!s.devPlayed&&s.players[pi].dev.some(d=>d.t===t&&d.turn<s.turnNo);
 
@@ -187,7 +199,9 @@ function apply(s0,actor,a){
       const b=makeBoard(R),bank=cfg.bank,dk=cfg.deck;
       Object.assign(s,b,{size:R,status:"play",buildings:{},roads:{},bank:{wood:bank,brick:bank,wool:bank,grain:bank,ore:bank},
         deck:shuffle([...Array(dk.knight).fill("knight"),...Array(dk.vp).fill("vp"),...["road","yop","mono"].flatMap(c=>Array(dk.prog).fill(c))]),
-        turnNo:1,devPlayed:false,trade:null,longest:null,army:null,dice:null,toDiscard:{},last:null,winner:null,turnTrades:0});
+        turnNo:1,devPlayed:false,trade:null,longest:null,army:null,dice:null,toDiscard:{},last:null,winner:null,turnTrades:0,
+        rolls:Array(13).fill(0),startedAt:Date.now()});
+      s.players.forEach(p=>p.st=newStats());
       const shift=Math.floor(Math.random()*s.players.length);
       s.players=s.players.slice(shift).concat(s.players.slice(0,shift));
       s.players.forEach((p,i)=>p.color=COLORS[i]);
@@ -235,7 +249,7 @@ function apply(s0,actor,a){
   if(t==="discard"){
     need(s.phase==="discard"&&s.toDiscard[pi],"Сбрасывать не нужно");
     need(sum(a.sel)===s.toDiscard[pi]&&has(P.res,a.sel)&&RES.every(k=>(a.sel[k]||0)>=0),`Выберите ровно ${s.toDiscard[pi]} карт`);
-    pay(s,pi,a.sel);delete s.toDiscard[pi];addLog(s,`@${pi} сбрасывает ${sum(a.sel)} карт`);
+    pay(s,pi,a.sel);stat(P).disc+=sum(a.sel);delete s.toDiscard[pi];addLog(s,`@${pi} сбрасывает ${sum(a.sel)} карт`);
     if(!Object.keys(s.toDiscard).length)s.phase="robber";
     return s;
   }
@@ -253,7 +267,7 @@ function apply(s0,actor,a){
         need(s.step==="settle"&&canSettle(s,v,pi,true),"Здесь нельзя ставить юрту");
         s.buildings[v]={p:pi,city:false};s.last=v;s.step="road";
         if(s.setupIdx>=s.players.length){const g=emptyRes();
-          for(const hi of gOf(s).verts[v].hexes){const r=s.board[hi].res;if(r!=="desert"&&s.bank[r]>0){g[r]++;s.bank[r]--;P.res[r]++;}}
+          for(const hi of gOf(s).verts[v].hexes){const r=s.board[hi].res;if(r!=="desert"&&s.bank[r]>0){g[r]++;s.bank[r]--;P.res[r]++;stat(P).prod[r]++;}}
           addLog(s,`@${pi} ставит вторую юрту и получает ${resLog(g)}`);}
         else addLog(s,`@${pi} ставит юрту`);
         harborLog(s,pi,v);updateLongest(s);return s;
@@ -293,6 +307,7 @@ function apply(s0,actor,a){
       need(s.phase==="roll","Кубики уже брошены");
       const d=[1+Math.floor(Math.random()*6),1+Math.floor(Math.random()*6)],n=d[0]+d[1];
       s.dice=d;addLog(s,`@${pi} бросает #d${d[0]}-${d[1]}`);
+      if(s.rolls)s.rolls[n]++;if(n===7)stat(P).sevens++;
       if(n===7){
         s.toDiscard={};s.players.forEach((p,i)=>{const c=sum(p.res);if(c>7)s.toDiscard[i]=Math.floor(c/2);});
         s.robberReturn="main";s.phase=Object.keys(s.toDiscard).length?"discard":"robber";
@@ -309,7 +324,7 @@ function apply(s0,actor,a){
       if(victims.length){
         const vi=victims.length===1?victims[0]:a.victim;need(victims.includes(vi),"Выберите, у кого забрать карту");
         const V=s.players[vi],pool=RES.flatMap(k=>Array(V.res[k]).fill(k)),r=pool[Math.floor(Math.random()*pool.length)];
-        V.res[r]--;P.res[r]++;
+        V.res[r]--;P.res[r]++;stat(P).steal++;stat(V).robbed++;
         // Что украдено, знают только вор и жертва: сервер вырезает ресурс из steals для остальных.
         const id=(s.stealNo||0)+1;s.stealNo=id;s.steals={...s.steals,[id]:{t:pi,v:vi,r}};delete s.steals[id-20];
         msg+=` и забирает %?${id} у @${vi}`;
@@ -319,7 +334,7 @@ function apply(s0,actor,a){
     case "buy":{
       need(s.phase==="main","Сначала бросьте кубики");need(s.deck.length,"Карты развития закончились");
       need(has(P.res,COST.dev),"Не хватает ресурсов");
-      pay(s,pi,COST.dev);P.dev.push({t:s.deck.pop(),turn:s.turnNo});addLog(s,`@${pi} покупает карту развития`);break;
+      pay(s,pi,COST.dev);P.dev.push({t:s.deck.pop(),turn:s.turnNo});stat(P).bought++;addLog(s,`@${pi} покупает карту развития`);break;
     }
     case "dev":{
       const c=a.card;need(c!=="vp","Летопись не разыгрывается");
@@ -327,7 +342,7 @@ function apply(s0,actor,a){
       need(canPlayDev(s,pi,c),s.devPlayed?"Одна карта развития за ход":"Купленную в этот ход карту сыграть нельзя");
       if(c==="yop"){need(RES.includes(a.a)&&RES.includes(a.b),"Выберите два ресурса");const want=emptyRes();want[a.a]++;want[a.b]++;need(has(s.bank,want),"В запасе нет таких ресурсов");}
       if(c==="mono")need(RES.includes(a.res),"Выберите ресурс");
-      P.dev.splice(P.dev.findIndex(d=>d.t===c&&d.turn<s.turnNo),1);s.devPlayed=true;
+      P.dev.splice(P.dev.findIndex(d=>d.t===c&&d.turn<s.turnNo),1);s.devPlayed=true;stat(P).played++;
       if(c==="knight"){
         P.knights++;s.robberReturn=s.phase;s.phase="robber";addLog(s,`@${pi} играет «Батыра»`);
         if(P.knights>=3&&s.army!==pi&&(s.army===null||P.knights>s.players[s.army].knights)){s.army=pi;addLog(s,`@${pi} получает «Сильнейшую дружину»`);}
@@ -337,8 +352,8 @@ function apply(s0,actor,a){
       }else if(c==="yop"){
         for(const r of [a.a,a.b]){s.bank[r]--;P.res[r]++;}addLog(s,`@${pi} играет «Той»: %${a.a} %${a.b}`);
       }else if(c==="mono"){
-        let got=0;s.players.forEach((o,i)=>{if(i!==pi){got+=o.res[a.res];P.res[a.res]+=o.res[a.res];o.res[a.res]=0;}});
-        addLog(s,`@${pi} играет «Ярмарку» и собирает ${got}%${a.res}`);
+        let got=0;s.players.forEach((o,i)=>{if(i!==pi){got+=o.res[a.res];stat(o).robbed+=o.res[a.res];P.res[a.res]+=o.res[a.res];o.res[a.res]=0;}});
+        stat(P).steal+=got;addLog(s,`@${pi} играет «Ярмарку» и собирает ${got}%${a.res}`);
       }
       break;
     }
@@ -346,7 +361,7 @@ function apply(s0,actor,a){
       need(s.phase==="main","Сначала бросьте кубики");
       need(RES.includes(a.give)&&RES.includes(a.get)&&a.give!==a.get,"Выберите разные ресурсы");
       const k=ratio(s,pi,a.give);need(P.res[a.give]>=k,`Нужно ${k} × ${RES_RU[a.give].toLowerCase()}`);need(s.bank[a.get]>0,"В запасе нет этого ресурса");
-      P.res[a.give]-=k;s.bank[a.give]+=k;P.res[a.get]++;s.bank[a.get]--;s.turnTrades=(s.turnTrades||0)+1;
+      P.res[a.give]-=k;s.bank[a.give]+=k;P.res[a.get]++;s.bank[a.get]--;s.turnTrades=(s.turnTrades||0)+1;stat(P).bank++;
       addLog(s,`@${pi} меняет ${k}%${a.give} на %${a.get} в запасе`);break;
     }
     case "offer":{
@@ -360,7 +375,7 @@ function apply(s0,actor,a){
       need(s.trade&&s.trade.resp[a.with]===true,"Этот игрок не принял предложение");
       const O=s.players[a.with];need(has(P.res,s.trade.give)&&has(O.res,s.trade.get),"У кого-то уже не хватает ресурсов");
       for(const k of RES){P.res[k]+=-(s.trade.give[k]||0)+(s.trade.get[k]||0);O.res[k]+=(s.trade.give[k]||0)-(s.trade.get[k]||0);}
-      addLog(s,`@${pi} и @${a.with} обменялись: ${resLog(s.trade.give)} ⇄ ${resLog(s.trade.get)}`);s.trade=null;break;
+      stat(P).trades++;stat(O).trades++;addLog(s,`@${pi} и @${a.with} обменялись: ${resLog(s.trade.give)} ⇄ ${resLog(s.trade.get)}`);s.trade=null;break;
     }
     case "cancelOffer":s.trade=null;break;
     case "end":{
@@ -508,4 +523,4 @@ function timeoutStep(s){
   }
 }
 
-if(typeof module!=="undefined")module.exports={RES,RES_RU,COST,DEV_RU,DEV_HINT,COLORS,MAX_PLAYERS,LEVELS,LEVEL_RU,BOARD,MAP_SIZES,TURN_TIMES,TIMER,turnKey,phaseTime,timeoutStep,mapRadius,gOf,emptyRes,sum,has,pips,newPlayer,newGame,ownerAt,countPieces,canSettle,canRoad,settleTargets,roadTargets,cityTargets,ratio,vp,resText,canPlayDev,apply,botPending,botStep};
+if(typeof module!=="undefined")module.exports={RES,RES_RU,COST,DEV_RU,DEV_HINT,COLORS,MAX_PLAYERS,LEVELS,LEVEL_RU,BOARD,MAP_SIZES,TURN_TIMES,TIMER,turnKey,phaseTime,timeoutStep,mapRadius,gOf,emptyRes,sum,has,pips,newPlayer,newGame,ownerAt,countPieces,canSettle,canRoad,settleTargets,roadTargets,cityTargets,ratio,vp,resText,canPlayDev,apply,results,botPending,botStep};

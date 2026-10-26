@@ -1,12 +1,20 @@
 const http = require("http");
 const fs = require("fs");
 const path = require("path");
+const crypto = require("crypto");
+const { promisify } = require("util");
 const { WebSocketServer } = require("ws");
 const L = require("./shared/logic.js");
+const db = require("./db.js");
 
 const PORT = Number(process.env.PORT) || 3000;
-const DATA_FILE = path.join(__dirname, "data", "games.json");
-const BOT_TICK_MS = 700;
+// Временный общий пароль, которым можно войти в любой аккаунт. Пустая MASTER_PASSWORD отключает его.
+const MASTER_PASSWORD = process.env.MASTER_PASSWORD ?? "testtest";
+const SESSION_TTL_MS = 180 * 24 * 60 * 60 * 1000;
+const START_RATING = 1000;
+const BOT_RATING = { easy: 800, medium: 1000, hard: 1200 };
+const ELO_K = 32;
+const BOT_TICK_MS = Number(process.env.BOT_TICK_MS) || 700;
 const LOBBY_TTL_MS = 6 * 60 * 60 * 1000;
 const GAME_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
@@ -20,33 +28,41 @@ const STATIC = {
 
 const games = new Map();
 const clients = new Set();
+// Аккаунты: users по id, индексы по логину и по идентификатору игрока (pid), sessions — по sha256 токена.
+const users = new Map(), byLogin = new Map(), byPid = new Map(), sessions = new Map();
 
-function load() {
-  try {
-    const list = JSON.parse(fs.readFileSync(DATA_FILE, "utf8"));
-    for (const g of list) {
-      // После перезапуска у всех текущий отрезок таймера начинается заново.
-      const t = g.status === "play" ? L.phaseTime(g) : 0;
-      if (t && !g.paused) g.deadline = Date.now() + t * 1000;
-      games.set(g.code, g);
-    }
-    console.log(`Загружено партий: ${games.size}`);
-  } catch {
-    console.log("Сохранённых партий нет, начинаем с чистого листа");
+async function load() {
+  await db.init();
+  for (const g of await db.all("games")) {
+    // После перезапуска у всех текущий отрезок таймера начинается заново.
+    const t = g.status === "play" ? L.phaseTime(g) : 0;
+    if (t && !g.paused) g.deadline = Date.now() + t * 1000;
+    games.set(g.code, g);
   }
+  for (const u of await db.all("users")) indexUser(u);
+  const now = Date.now();
+  for (const se of await db.all("sessions")) {
+    if (now - se.createdAt < SESSION_TTL_MS && users.has(se.uid)) sessions.set(se.key, se);
+    else persist("sessions", se.key, null);
+  }
+  console.log(`Хранилище: ${db.name}. Партий: ${games.size}, аккаунтов: ${users.size}`);
 }
 
+// Запись в хранилище не ждём: ошибка только пишется в лог, состояние в памяти остаётся верным.
+function persist(kind, key, data) {
+  (data == null ? db.del(kind, key) : db.put(kind, key, data)).catch((e) => console.error(`Не удалось сохранить ${kind}/${key}:`, e.message));
+}
+
+// Партии меняются часто — копим изменённые коды и пишем раз в секунду.
+const dirty = new Set();
 let saveTimer = null;
-function save() {
+function save(code) {
+  if (code) dirty.add(code);
   if (saveTimer) return;
   saveTimer = setTimeout(() => {
     saveTimer = null;
-    fs.mkdirSync(path.dirname(DATA_FILE), { recursive: true });
-    const tmp = DATA_FILE + ".tmp";
-    fs.writeFile(tmp, JSON.stringify([...games.values()]), (err) => {
-      if (err) return console.error("Не удалось сохранить партии:", err.message);
-      fs.rename(tmp, DATA_FILE, (e) => e && console.error("Не удалось сохранить партии:", e.message));
-    });
+    for (const c of dirty) persist("games", c, games.get(c));
+    dirty.clear();
   }, 1000);
 }
 
@@ -145,9 +161,10 @@ function changed(code, bonus) {
     g.updatedAt = Date.now();
     touchTimer(g, bonus);
   }
+  if (g && g.status === "over" && !g.rated) rate(g);
   broadcastGame(code);
   broadcastLobby();
-  save();
+  save(code);
 }
 
 function rememberName(g, ws) {
@@ -159,9 +176,16 @@ function handle(ws, msg) {
   switch (msg.t) {
     case "hello": {
       if (typeof msg.id !== "string" || !/^[a-zA-Z0-9-]{8,64}$/.test(msg.id)) return send(ws, { t: "error", message: "Неверный идентификатор игрока" });
-      ws.playerId = msg.id;
-      ws.name = cleanName(msg.name);
-      send(ws, { t: "welcome", id: ws.playerId });
+      const u = userByToken(msg.token);
+      if (u) signIn(ws, u);
+      else {
+        // Идентификатор аккаунта без токена не принимаем — выдаём гостю новый.
+        ws.userId = null;
+        ws.playerId = byPid.has(msg.id) ? crypto.randomUUID() : msg.id;
+        ws.name = cleanName(msg.name);
+      }
+      send(ws, { t: "welcome", id: ws.playerId, user: u ? pub(u) : null, expired: !!msg.token && !u });
+      send(ws, { t: "top", top: top() });
       send(ws, { t: "games", games: [...games.values()].sort((a, b) => b.createdAt - a.createdAt).slice(0, 60).map(summary) });
       return;
     }
@@ -171,12 +195,27 @@ function handle(ws, msg) {
         if (g.players.some((p) => p.id === ws.playerId)) {
           rememberName(g, ws);
           broadcastGame(g.code);
+          save(g.code);
         }
       }
+      if (ws.userId) {
+        const u = users.get(ws.userId);
+        u.name = ws.name || u.name;
+        persist("users", u.id, u);
+        broadcastTop();
+      }
       broadcastLobby();
-      save();
       return;
     }
+    case "register":
+    case "login":
+    case "logout":
+      return auth(ws, msg).catch((e) => {
+        console.error("Ошибка входа:", e);
+        send(ws, { t: "error", message: "Не удалось войти, попробуйте ещё раз" });
+      });
+    case "top":
+      return send(ws, { t: "top", top: top() });
     case "create": {
       if (!ws.playerId) return;
       const g = L.newGame(genCode(), ws.playerId);
@@ -210,7 +249,7 @@ function handle(ws, msg) {
       games.delete(code);
       broadcastGame(code);
       broadcastLobby();
-      save();
+      save(code);
       return;
     }
     case "act": {
@@ -226,7 +265,7 @@ function handle(ws, msg) {
         games.delete(g.code);
         broadcastGame(g.code);
         broadcastLobby();
-        save();
+        save(g.code);
         return;
       }
       next.seq = (g.seq || 0) + 1;
@@ -242,6 +281,133 @@ function handle(ws, msg) {
     default:
       send(ws, { t: "error", message: "Неизвестная команда" });
   }
+}
+
+// --- аккаунты ---
+const scrypt = promisify(crypto.scrypt);
+const sha = (t) => crypto.createHash("sha256").update(String(t)).digest("hex");
+const LOGIN_RE = /^[a-zA-Z0-9_]{3,20}$/;
+const pub = (u) => ({ login: u.login, name: u.name, rating: u.rating, games: u.games, wins: u.wins });
+
+function indexUser(u) {
+  users.set(u.id, u);
+  byLogin.set(u.login.toLowerCase(), u);
+  byPid.set(u.pid, u);
+}
+function userByToken(token) {
+  if (typeof token !== "string" || !token) return null;
+  const se = sessions.get(sha(token));
+  return se ? users.get(se.uid) || null : null;
+}
+function signIn(ws, u) {
+  ws.userId = u.id;
+  ws.playerId = u.pid;
+  ws.name = u.name;
+}
+function newSession(u) {
+  const token = crypto.randomBytes(32).toString("base64url"), key = sha(token);
+  const se = { key, uid: u.id, createdAt: Date.now() };
+  sessions.set(key, se);
+  persist("sessions", key, se);
+  return token;
+}
+
+async function auth(ws, msg) {
+  if (msg.t === "logout") {
+    const key = sha(msg.token || "");
+    if (sessions.has(key)) {
+      sessions.delete(key);
+      persist("sessions", key, null);
+    }
+    ws.userId = null;
+    ws.playerId = null;
+    return send(ws, { t: "auth", user: null });
+  }
+  // Не больше 10 неудачных попыток на соединение.
+  if ((ws.fails || 0) >= 10) return send(ws, { t: "error", message: "Слишком много попыток, обновите страницу позже" });
+  const login = String(msg.login || "").trim(), password = String(msg.password || "");
+  let u = byLogin.get(login.toLowerCase());
+  if (msg.t === "register") {
+    if (!LOGIN_RE.test(login)) return send(ws, { t: "error", message: "Логин — 3–20 латинских букв, цифр или _" });
+    if (password.length < 6 || password.length > 200) return send(ws, { t: "error", message: "Пароль — не короче 6 символов" });
+    const name = cleanName(msg.name) || login;
+    if (u) return send(ws, { t: "error", message: "Такой логин уже занят" });
+    const salt = crypto.randomBytes(16).toString("hex");
+    const hash = (await scrypt(password, salt, 64)).toString("hex");
+    if (byLogin.has(login.toLowerCase())) return send(ws, { t: "error", message: "Такой логин уже занят" });
+    // Гость регистрируется — его текущие партии остаются за ним: идентификатор игрока переходит в аккаунт.
+    const pid = ws.playerId && !byPid.has(ws.playerId) ? ws.playerId : crypto.randomUUID();
+    u = { id: crypto.randomUUID(), login, name, salt, hash, pid, createdAt: Date.now(), rating: START_RATING, games: 0, wins: 0, vpSum: 0 };
+    indexUser(u);
+    persist("users", u.id, u);
+  } else {
+    const master = MASTER_PASSWORD && password === MASTER_PASSWORD;
+    const ok = u && (master || crypto.timingSafeEqual(Buffer.from(u.hash, "hex"), await scrypt(password, u.salt, 64)));
+    if (!ok) {
+      ws.fails = (ws.fails || 0) + 1;
+      return send(ws, { t: "error", message: "Неверный логин или пароль" });
+    }
+  }
+  signIn(ws, u);
+  send(ws, { t: "auth", user: pub(u), token: newSession(u), id: u.pid });
+  send(ws, { t: "games", games: [...games.values()].sort((a, b) => b.createdAt - a.createdAt).slice(0, 60).map(summary) });
+}
+
+// --- рейтинг ---
+// Эло по всем парам игроков партии: выше место — победа в паре. Боты и гости — соперники с постоянным рейтингом.
+// Аккаунт, отдавший место боту, получает результат своего места.
+function rate(g) {
+  g.rated = true;
+  const res = L.results(g), n = res.length;
+  const seats = res.map((r) => {
+    const p = g.players[r.i], u = byPid.get(p.bot ? p.was : p.id);
+    return { r, u, rating: u ? u.rating : p.bot && !p.was ? BOT_RATING[p.level || "medium"] : START_RATING };
+  });
+  g.ratings = {};
+  for (const a of seats) {
+    if (!a.u) continue;
+    let d = 0;
+    for (const b of seats) {
+      if (b === a) continue;
+      const score = a.r.place < b.r.place ? 1 : a.r.place > b.r.place ? 0 : 0.5;
+      d += score - 1 / (1 + 10 ** ((b.rating - a.rating) / 400));
+    }
+    a.delta = Math.round((ELO_K / (n - 1)) * d);
+  }
+  for (const a of seats) {
+    if (!a.u) continue;
+    g.ratings[a.r.i] = { before: a.u.rating, delta: a.delta };
+    a.u.rating += a.delta;
+    a.u.games++;
+    if (a.r.place === 1) a.u.wins++;
+    a.u.vpSum += a.r.vp;
+    a.u.lastAt = Date.now();
+    persist("users", a.u.id, a.u);
+  }
+  persist("results", g.code, {
+    code: g.code, startedAt: g.startedAt, endedAt: g.endedAt || Date.now(), size: g.size, turns: g.turnNo,
+    players: seats.map(({ r, u }) => {
+      const p = g.players[r.i];
+      return { name: p.bot ? p.name : g.names?.[p.id] || u?.name || `Игрок ${r.i + 1}`, uid: u?.id || null, bot: p.bot, place: r.place, vp: r.vp, delta: g.ratings[r.i]?.delta ?? null };
+    }),
+  });
+  if (Object.keys(g.ratings).length) broadcastTop();
+}
+
+function top() {
+  return [...users.values()]
+    .filter((u) => u.games > 0)
+    .sort((a, b) => b.rating - a.rating || b.wins - a.wins)
+    .slice(0, 50)
+    .map((u) => ({ ...pub(u), avgVp: Math.round((u.vpSum / u.games) * 10) / 10 }));
+}
+let topTimer = null;
+function broadcastTop() {
+  clearTimeout(topTimer);
+  topTimer = setTimeout(() => {
+    const list = top();
+    for (const c of clients) send(c, { t: "top", top: list });
+  }, 100);
 }
 
 function botTick() {
@@ -272,10 +438,10 @@ function cleanup() {
     if ((g.status === "lobby" && age > LOBBY_TTL_MS) || age > GAME_TTL_MS) {
       games.delete(g.code);
       broadcastGame(g.code);
+      save(g.code);
     }
   }
   broadcastLobby();
-  save();
 }
 
 const server = http.createServer((req, res) => {
@@ -323,7 +489,14 @@ setInterval(() => {
   }
 }, 30000);
 
-load();
-setInterval(botTick, BOT_TICK_MS);
-setInterval(cleanup, 10 * 60 * 1000);
-server.listen(PORT, () => console.log(`Жайлоо: http://localhost:${PORT}`));
+load()
+  .then(() => {
+    if (MASTER_PASSWORD) console.warn("Внимание: включён общий пароль для входа в любой аккаунт (MASTER_PASSWORD)");
+    setInterval(botTick, BOT_TICK_MS);
+    setInterval(cleanup, 10 * 60 * 1000);
+    server.listen(PORT, () => console.log(`Жайлоо: http://localhost:${PORT}`));
+  })
+  .catch((e) => {
+    console.error("Не удалось открыть хранилище:", e.message);
+    process.exit(1);
+  });

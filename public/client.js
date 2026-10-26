@@ -5,16 +5,19 @@ const store = {
   set(k, v) { try { localStorage.setItem(k, v); } catch {} },
 };
 
+const newId = () => (crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2) + Date.now().toString(36)).replace(/[^a-zA-Z0-9-]/g, "");
 let myId = store.get("zh.id");
 if (!myId) {
-  myId = (crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2) + Date.now().toString(36)).replace(/[^a-zA-Z0-9-]/g, "");
+  myId = newId();
   store.set("zh.id", myId);
 }
 let myName = store.get("zh.name") || "";
+// Аккаунт: токен сессии хранится в браузере, account — профиль от сервера (логин, имя, рейтинг).
+let token = store.get("zh.token") || "", account = null, tops = [];
 
 let ws = null, connected = false, retry = 0;
 let games = [], game = null, currentCode = null;
-let ui = { mode: null, panel: null, robberHex: null, disc: emptyRes(), give: emptyRes(), get: emptyRes(), bg: "wood", bt: "brick", yopA: "wood", yopB: "ore", mono: "grain", quick: false, quickSent: 0 };
+let ui = { auth: null, authForm: { login: "", password: "", name: "" }, summaryHidden: false, mode: null, panel: null, robberHex: null, disc: emptyRes(), give: emptyRes(), get: emptyRes(), bg: "wood", bt: "brick", yopA: "wood", yopB: "ore", mono: "grain", quick: false, quickSent: 0 };
 let toastTimer = null;
 // Таймер считаем от момента получения состояния: часы клиента и сервера могут не совпадать.
 let timerEnd = null;
@@ -43,12 +46,48 @@ function connect() {
     connected = true;
     retry = 0;
     setConn();
-    ws.send(JSON.stringify({ t: "hello", id: myId, name: myName }));
+    ws.send(JSON.stringify({ t: "hello", id: myId, name: myName, token }));
     if (currentCode) ws.send(JSON.stringify({ t: "open", code: currentCode }));
   };
   ws.onmessage = (ev) => {
     const m = JSON.parse(ev.data);
     if (m.t === "games") { games = m.games; if (!game) render(); }
+    else if (m.t === "welcome") {
+      if (m.id !== myId) { myId = m.id; store.set("zh.id", myId); }
+      if (m.expired) { token = ""; store.set("zh.token", ""); toast("Сессия истекла — войдите снова"); }
+      setAccount(m.user);
+      render();
+    }
+    else if (m.t === "auth") {
+      if (m.user) {
+        token = m.token;
+        store.set("zh.token", token);
+        myId = m.id;
+        store.set("zh.id", myId);
+        setAccount(m.user);
+        ui.auth = null;
+        ui.authForm = { login: "", password: "", name: "" };
+        toast(`Вы вошли как ${m.user.name}`);
+        // Под аккаунтом другой идентификатор игрока — переоткрываем партию, чтобы видеть свои карты.
+        if (currentCode) ws.send(JSON.stringify({ t: "open", code: currentCode }));
+      } else {
+        // Вышли из аккаунта — дальше играем новым гостем.
+        token = "";
+        store.set("zh.token", "");
+        account = null;
+        myId = newId();
+        store.set("zh.id", myId);
+        ws.send(JSON.stringify({ t: "hello", id: myId, name: myName }));
+        if (currentCode) ws.send(JSON.stringify({ t: "open", code: currentCode }));
+      }
+      render();
+    }
+    else if (m.t === "top") {
+      tops = m.top;
+      const mine = account && tops.find((u) => u.login === account.login);
+      if (mine) account = { ...account, ...mine };
+      render();
+    }
     else if (m.t === "opened") { currentCode = m.code; store.set("zh.game", m.code); if (location.hash !== "#" + m.code) history.replaceState(null, "", "#" + m.code); }
     else if (m.t === "state") {
       if (m.game.code !== currentCode) return;
@@ -67,6 +106,7 @@ function connect() {
     else if (m.t === "closed") { if (m.code === currentCode) { toast("Партия удалена"); closeGame(); } }
     else if (m.t === "error") {
       ui.quick = false;
+      if (ui.auth) { ui.authError = m.message; render(); }
       toast(m.message);
       if (/не найдена/.test(m.message) && !game) closeGame();
     }
@@ -76,6 +116,10 @@ function connect() {
     setConn();
     setTimeout(connect, Math.min(10000, 500 * 2 ** retry++));
   };
+}
+function setAccount(u) {
+  account = u;
+  if (u && u.name !== myName) { myName = u.name; store.set("zh.name", myName); }
 }
 function setConn() {
   const c = $("conn");
@@ -185,7 +229,10 @@ function render() {
 }
 function renderView() {
   const me = $("me");
-  me.innerHTML = myName ? `${ava(myName, "#f2b53a", "sm")}<span>${esc(myName)}</span>` : "";
+  me.innerHTML = account
+    ? `${ava(account.name, "#f2b53a", "sm")}<span>${esc(account.name)}</span><span class="rating" title="Рейтинг — растёт за победы, падает за поражения">${account.rating}</span><button class="btn ghost small" data-a="logout" title="Выйти из аккаунта">${ICON("exit")}<span class="tl">Выйти</span></button>`
+    : `${myName ? `${ava(myName, "#f2b53a", "sm")}<span class="guest">${esc(myName)}</span>` : ""}<button class="btn small" data-a="authopen">Войти</button>`;
+  renderAuth();
   if (!game) return currentCode ? renderLoading() : renderLobby();
   if (game.status === "lobby") renderRoom();
   else renderGame();
@@ -198,6 +245,37 @@ const heroBg = () => {
     ${cells.concat(cells.filter((c) => c[1] === 0).map(([x, , r]) => [x, 180, r])).map(([x, y, r]) => `<use href="#hx" x="${x}" y="${y}" style="fill:var(--${r})"/>`).join("")}</pattern></defs>
     <rect width="100%" height="100%" fill="url(#hexpat)"/></svg>`;
 };
+
+// --- вход и регистрация ---
+function renderAuth() {
+  const box = $("modal");
+  if (!ui.auth) { box.hidden = true; box.innerHTML = ""; return; }
+  const reg = ui.auth === "register", f = ui.authForm;
+  box.hidden = false;
+  box.innerHTML = `<div class="panel authbox" role="dialog" aria-modal="true" aria-labelledby="auth-h">
+    <div class="pop-h"><b id="auth-h">${reg ? "Регистрация" : "Вход"}</b><button class="x" data-a="authclose" aria-label="Закрыть">×</button></div>
+    <div class="tabs" role="tablist"><button role="tab" aria-selected="${!reg}" class="${reg ? "" : "on"}" data-authtab="login">Вход</button><button role="tab" aria-selected="${reg}" class="${reg ? "on" : ""}" data-authtab="register">Регистрация</button></div>
+    <label for="au-login">Логин</label><input id="au-login" autocomplete="username" maxlength="20" value="${esc(f.login)}" placeholder="латиница, цифры, _">
+    <label for="au-pass">Пароль</label><input id="au-pass" type="password" autocomplete="${reg ? "new-password" : "current-password"}" maxlength="200" value="${esc(f.password)}" placeholder="${reg ? "не короче 6 символов" : ""}">
+    ${reg ? `<label for="au-name">Имя в игре</label><input id="au-name" maxlength="24" value="${esc(f.name || myName)}" placeholder="Например, Айгуль">` : ""}
+    ${ui.authError ? `<p class="warn">${esc(ui.authError)}</p>` : ""}
+    <button class="btn green big" data-a="authsubmit">${reg ? "Создать аккаунт" : "Войти"}</button>
+    <p class="hint">${reg ? "Партии, которые вы играете сейчас, останутся за вами. Рейтинг считается только у игроков с аккаунтом." : "Аккаунт хранит ваше имя, рейтинг и партии на любом устройстве."}</p></div>`;
+}
+function submitAuth() {
+  const f = ui.authForm;
+  ui.authError = null;
+  if (!f.login.trim() || !f.password) { ui.authError = "Введите логин и пароль"; return render(); }
+  send({ t: ui.auth, login: f.login.trim(), password: f.password, name: (f.name || myName).trim() });
+}
+
+// --- рейтинг ---
+function topHTML() {
+  if (!tops.length) return `<p class="empty">Пока пусто: доиграйте партию с аккаунтом — и вы первым попадёте в таблицу.</p>`;
+  return `<div class="tablewrap"><table class="toptable"><thead><tr><th>#</th><th>Игрок</th><th title="Рейтинг Эло: старт 1000">Рейтинг</th><th>Партий</th><th>Побед</th><th title="Среднее число очков за партию">Ср. очки</th></tr></thead><tbody>
+    ${tops.map((u, i) => `<tr class="${account && u.login === account.login ? "mine" : ""}"><td class="pl-n">${i < 3 ? `<span class="medal m${i + 1}">${i + 1}</span>` : i + 1}</td><td><span class="who2">${ava(u.name, COLORS[i % COLORS.length], "sm")}<span>${esc(u.name)}<small>@${esc(u.login)}</small></span></span></td><td class="tn"><b>${u.rating}</b></td><td class="tn">${u.games}</td><td class="tn">${u.wins} <small>${Math.round((u.wins / u.games) * 100)}%</small></td><td class="tn">${u.avgVp}</td></tr>`).join("")}
+  </tbody></table></div>`;
+}
 
 function renderLobby() {
   document.title = "Жайлоо";
@@ -243,12 +321,16 @@ function renderLobby() {
       <div class="panel rooms"><div class="rooms-h"><h3>Ждут игроков</h3><button class="btn small blue" data-a="create">Создать комнату</button></div>
         ${open.length ? open.map((g) => row(g, "Войти", "blue")).join("") : `<p class="empty">Открытых комнат нет. Создайте свою и позовите друзей или сыграйте с ботами.</p>`}</div>
     </section>
+    <section class="sec" id="sec-top">
+      <h2>Рейтинг</h2>
+      <div class="panel rooms"><div class="rooms-h"><h3>Лучшие игроки</h3>${account ? `<span class="hint">Ваш рейтинг: <b>${account.rating}</b></span>` : `<button class="btn small blue" data-a="authopen">Войти, чтобы попасть в рейтинг</button>`}</div>${topHTML()}</div>
+    </section>
     <section class="sec" id="sec-rules">
       <h2>Как играть</h2>
-      <div class="steps">${steps.map((t, i) => `<div class="panel"><span class="num">${i + 1}</span><span>${t}</span></div>`).join("")}</div>
+      <div class="steps">${steps.map((t, i) => `<div class="panel"><span class="tn">${i + 1}</span><span>${t}</span></div>`).join("")}</div>
       <div class="costs">${costs.map(([ic, n, c]) => `<div class="panel">${ICON(ic)}<span><b>${n}</b>${costHTML(c)}</span></div>`).join("")}</div>
     </section>
-    <p class="foot">Жайлоо — игра для своих. Аккаунты не нужны: вас узнают по этому браузеру.</p>`;
+    <p class="foot">Жайлоо — игра для своих. Играть можно и без аккаунта: гостя узнают по этому браузеру. Аккаунт нужен для рейтинга.</p>`;
 }
 
 const THUMB_FILL = ["var(--wood)", "var(--grain)", "var(--wool)", "var(--brick)", "var(--ore)"];
@@ -592,12 +674,12 @@ function renderGame() {
     <div class="stage">
       <div class="panel turn ${mine ? "mine" : ""}" style="--pc:${cur.color}">${ava(nameOf(s, s.cur), cur.color)}
         <div class="txt"><span class="who">${s.status === "over" ? "Игра окончена" : (mine ? "Ваш ход!" : "Ход: " + esc(nameOf(s, s.cur)))}</span><span class="hint">${s.status === "play" ? esc(phaseHint(s, me)) : ""}</span>${turnExtra}</div>${timer}${dice}</div>
-      <div class="topr"><span class="chip">Код <span class="code">${esc(s.code)}</span></span><button class="btn ghost small" data-a="theme" title="${themeIcon().label}" aria-label="${themeIcon().label}">${themeIcon().html}</button><button class="btn ghost small ${ui.panel === "legend" ? "on" : ""}" data-panel="legend" title="Как читать поле — легенда">${ICON("help")}<span class="tl">Поле</span></button>${pauseBtn}<button class="btn ghost small" data-a="back" title="К списку партий — ваше место остаётся за вами">${ICON("exit")}<span class="tl">Выйти</span></button>${me >= 0 && s.status === "play" ? `<button class="btn ghost small" data-a="abandon" title="Отдать место боту — он будет играть за вас, а вы сможете смотреть и вернуть управление">${ICON("bot")}<span class="tl">Отдать боту</span></button>` : ""}${s.host === myId ? delBtn(s.code) : ""}</div>
+      <div class="topr"><span class="chip">Код <span class="code">${esc(s.code)}</span></span>${s.status === "over" && ui.summaryHidden ? `<button class="btn green small" data-a="summary">${ICON("cards")}<span class="tl">Итоги</span></button>` : ""}<button class="btn ghost small" data-a="theme" title="${themeIcon().label}" aria-label="${themeIcon().label}">${themeIcon().html}</button><button class="btn ghost small ${ui.panel === "legend" ? "on" : ""}" data-panel="legend" title="Как читать поле — легенда">${ICON("help")}<span class="tl">Поле</span></button>${pauseBtn}<button class="btn ghost small" data-a="back" title="К списку партий — ваше место остаётся за вами">${ICON("exit")}<span class="tl">Выйти</span></button>${me >= 0 && s.status === "play" ? `<button class="btn ghost small" data-a="abandon" title="Отдать место боту — он будет играть за вас, а вы сможете смотреть и вернуть управление">${ICON("bot")}<span class="tl">Отдать боту</span></button>` : ""}${s.host === myId ? delBtn(s.code) : ""}</div>
       <div class="boardbox">${boardSVG(s, me)}<div class="zoombar"><button data-zoom="in" aria-label="Приблизить" title="Приблизить">+</button><button data-zoom="out" aria-label="Отдалить" title="Отдалить">−</button><button data-zoom="reset" aria-label="Показать всё поле" title="Показать всё поле">${ICON("fit")}</button></div></div>
       ${s.paused ? `<div class="over paused"><div class="panel">${ICON("pause")}<span class="w">Пауза</span><span class="muted">Таймеры и боты стоят. Снять паузу — голосованием игроков.</span></div></div>` : ""}
       ${mine && fxOn(fx.turn, 1800) ? `<div class="yourturn" ${fxDelay(fx.turn)}>Ваш ход!</div>` : ""}
       ${pops.length ? `<div class="pops">${pops.join("")}</div>` : ""}
-      ${s.status === "over" ? `<div class="over"><div class="panel">${ava(nameOf(s, s.winner), s.players[s.winner].color)}<span class="w">${esc(nameOf(s, s.winner))} побеждает!</span><span class="muted">${vp(s, s.winner, true)} победных очков</span><button class="btn green" data-a="back">К списку партий</button></div></div>` : ""}
+      ${s.status === "over" && !ui.summaryHidden ? summaryHTML(s, me) : ""}
     </div>
     <div class="hud">${hud}</div>
     <aside class="side">
@@ -611,6 +693,65 @@ function renderGame() {
   document.title = mine ? "Ваш ход — Жайлоо" : "Жайлоо";
 }
 
+// --- итоги партии ---
+const fmtDur = (ms) => { const m = Math.round(ms / 60000); return m < 60 ? `${m} мин` : `${Math.floor(m / 60)} ч ${m % 60} мин`; };
+function summaryHTML(s, me) {
+  const rows = results(s), W = s.players[s.winner];
+  // Место, отданное боту, всё равно ваше: подсвечиваем его и показываем изменение рейтинга.
+  if (me < 0) me = s.players.findIndex((p) => p.was === myId);
+  const nm = (i) => { const p = s.players[i]; return (p.was && s.names?.[p.was]) || nameOf(s, i); };
+  const st = (r) => r.st || {};
+  const prodSum = (r) => sum(st(r).prod || emptyRes());
+  // Номинации: у кого больше всего — показываем, только если это число больше нуля и лидер один.
+  const award = (title, icon, val, unit) => {
+    const max = Math.max(...rows.map(val));
+    const top = rows.filter((r) => val(r) === max);
+    return max > 0 && top.length === 1 ? `<div class="award">${ICON(icon)}<span><b>${title}</b>${esc(nm(top[0].i))} · ${max} ${unit}</span></div>` : "";
+  };
+  const awards = [
+    award("Богатый урожай", "grain", prodSum, "карт с кубиков"),
+    award("Купец", "trade", (r) => (st(r).trades || 0) + (st(r).bank || 0), "обменов"),
+    award("Барымта", "sword", (r) => st(r).steal || 0, "карт отнял"),
+    award("Не повезло", "cards", (r) => (st(r).robbed || 0) + (st(r).disc || 0), "карт потерял"),
+  ].join("");
+  const vpParts = (r) => [
+    r.settle && `${ICON("yurt")}${r.settle}`, r.city && `${ICON("ail")}${r.city}×2`,
+    r.longest && `<span title="Великий путь">${ICON("road")}+2</span>`, r.army && `<span title="Сильнейшая дружина">${ICON("sword")}+2</span>`,
+    r.chron && `<span title="Летопись">${ICON("book")}${r.chron}</span>`,
+  ].filter(Boolean).map((x) => `<span class="vpp">${x}</span>`).join("");
+  const rating = (r) => {
+    const x = s.ratings?.[r.i];
+    if (!x) return `<span class="muted" title="Рейтинг считается только у игроков с аккаунтом">—</span>`;
+    return `${x.before + x.delta} <b class="${x.delta >= 0 ? "up" : "down"}">${x.delta >= 0 ? "+" : ""}${x.delta}</b>`;
+  };
+  const table = `<div class="tablewrap"><table class="sumtable"><thead><tr><th>Место</th><th>Игрок</th><th>Очки</th><th title="Ресурсы, пришедшие с кубиков">Урожай</th><th title="С игроками / с запасом">Обмены</th><th title="Куплено / сыграно карт развития">Развитие</th><th title="Отнял / потерял / сбросил на буране">Буран</th><th>Рейтинг</th></tr></thead><tbody>
+    ${rows.map((r) => { const p = s.players[r.i], t = st(r); return `<tr class="${r.i === me ? "mine" : ""}">
+      <td class="pl-n">${r.place <= 3 ? `<span class="medal m${r.place}">${r.place}</span>` : r.place}</td>
+      <td><span class="who2">${ava(nm(r.i), p.color, "sm")}<span>${esc(nm(r.i))}${p.bot && !p.was ? `<small>бот · ${LEVEL_RU[p.level || "medium"]}</small>` : p.was ? "<small>доигрывал бот</small>" : ""}</span></span></td>
+      <td><b class="bigvp">${r.vp}</b><span class="vps">${vpParts(r)}</span></td>
+      <td><b>${prodSum(r)}</b>${t.prod ? `<span class="chips">${resChips(t.prod)}</span>` : ""}</td>
+      <td class="tn">${t.trades ?? "—"} / ${t.bank ?? "—"}</td>
+      <td class="tn">${t.bought ?? "—"} / ${t.played ?? "—"}</td>
+      <td class="tn">${t.steal ?? "—"} / ${t.robbed ?? "—"} / ${t.disc ?? "—"}</td>
+      <td class="tn">${rating(r)}</td></tr>`; }).join("")}
+  </tbody></table></div>`;
+  let dice = "";
+  if (s.rolls) {
+    const max = Math.max(1, ...s.rolls.slice(2)), total = s.rolls.reduce((a, b) => a + b, 0);
+    dice = `<h4>Кубики · ${total} ${plural(total, "бросок", "броска", "бросков")}</h4><div class="dicebars" role="img" aria-label="Сколько раз выпало каждое число">${s.rolls.slice(2).map((c, k) => `<div class="db ${k + 2 === 7 ? "seven" : ""}" title="${k + 2} — выпало ${c} раз"><span class="c">${c}</span><i style="height:${Math.round((c / max) * 100)}%"></i><span class="n">${k + 2}</span></div>`).join("")}</div>`;
+  }
+  const info = [s.turnNo && `${s.turnNo} ${plural(s.turnNo, "ход", "хода", "ходов")}`, s.startedAt && s.endedAt && fmtDur(s.endedAt - s.startedAt), BOARD[s.size]?.name && `${BOARD[s.size].name.toLowerCase()} карта`].filter(Boolean).join(" · ");
+  const my = me >= 0 && s.ratings?.[me];
+  return `<div class="over sum"><div class="panel">
+    <div class="sum-h">${ava(nm(s.winner), W.color)}<div><span class="w">${s.winner === me ? "Вы победили!" : `${esc(nm(s.winner))} побеждает!`}</span><span class="muted">${info}</span></div></div>
+    ${my ? `<p class="myrate">Ваш рейтинг: <b>${my.before + my.delta}</b> <b class="${my.delta >= 0 ? "up" : "down"}">${my.delta >= 0 ? "+" : ""}${my.delta}</b></p>` : me >= 0 && !account ? `<p class="hint">Партия не попала в рейтинг: <button class="link" data-a="authopen">войдите или зарегистрируйтесь</button>, чтобы следующие считались.</p>` : ""}
+    ${table}
+    ${awards ? `<div class="awards">${awards}</div>` : ""}
+    ${dice}
+    <div class="row"><button class="btn green" data-a="back">К списку партий</button><button class="btn" data-a="hidesummary">Посмотреть поле</button></div>
+  </div></div>`;
+}
+
 function openGame(code) {
   code = String(code).trim().toUpperCase();
   if (!/^[A-Z0-9]{4,6}$/.test(code)) return toast("Код игры — 5 букв и цифр");
@@ -619,6 +760,7 @@ function openGame(code) {
   ui.mode = null;
   ui.panel = null;
   ui.robberHex = null;
+  ui.summaryHidden = false;
   send({ t: "open", code });
 }
 // Последнее состояние партии держим в sessionStorage вкладки: после перезагрузки сразу рисуем игру,
@@ -808,6 +950,16 @@ document.addEventListener("click", async (ev) => {
     return $("sec-" + d.scroll)?.scrollIntoView({ behavior: "smooth", block: "start" });
   }
   if (d.a === "rename") return saveName();
+  if (d.a === "authopen") { ui.auth = "login"; ui.authError = null; render(); return $("au-login")?.focus(); }
+  if (d.a === "authclose") { ui.auth = null; return render(); }
+  if (d.authtab) { ui.auth = d.authtab; ui.authError = null; return render(); }
+  if (d.a === "authsubmit") return submitAuth();
+  if (d.a === "logout") {
+    if (!confirm("Выйти из аккаунта? В этом браузере вы снова станете гостем.")) return;
+    return send({ t: "logout", token });
+  }
+  if (d.a === "summary") { ui.summaryHidden = false; return render(); }
+  if (d.a === "hidesummary") { ui.summaryHidden = true; return render(); }
   if (d.a === "theme") return setTheme(theme() === "dark" ? "light" : "dark", true);
   if (d.a === "create") { if (game || ensureName()) send({ t: "create" }); return; }
   if (d.a === "quick") {
@@ -888,9 +1040,17 @@ document.addEventListener("click", async (ev) => {
   if (d.a) return act({ type: d.a });
 });
 // Несохранённое имя переживает перерисовку, даже если фокус ушёл на другую кнопку.
-document.addEventListener("input", (ev) => { if (ev.target.id === "myname") ui.nameDraft = ev.target.value; });
+// Клик по затемнению вокруг окна входа закрывает его.
+document.addEventListener("click", (ev) => { if (ev.target.id === "modal") { ui.auth = null; render(); } });
+const AUTH_FIELDS = { "au-login": "login", "au-pass": "password", "au-name": "name" };
+document.addEventListener("input", (ev) => {
+  if (ev.target.id === "myname") ui.nameDraft = ev.target.value;
+  if (AUTH_FIELDS[ev.target.id]) ui.authForm[AUTH_FIELDS[ev.target.id]] = ev.target.value;
+});
 document.addEventListener("keydown", (ev) => {
+  if (ev.key === "Escape" && ui.auth) { ui.auth = null; return render(); }
   if (ev.key !== "Enter") return;
+  if (AUTH_FIELDS[ev.target.id]) return submitAuth();
   if (ev.target.id === "joincode") openGame(ev.target.value);
   if (ev.target.id === "myname") saveName();
 });

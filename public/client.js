@@ -17,7 +17,7 @@ let myName = store.get("zh.name") || "";
 let token = store.get("zh.token") || "", account = null, tops = [];
 if (token) try { account = JSON.parse(store.get("zh.account")); } catch {}
 
-let ws = null, connected = false, retry = 0;
+let ws = null, connected = false, retry = 0, build = null;
 let games = [], game = null, currentCode = null;
 // gk — какую игру создаём из лобби: «Жайлоо» или «Кочёвка»; n — тайл, который игрок примеряет на поле «Кочёвки».
 let ui = { gk: store.get("zh.gk") === "nomad" ? "nomad" : "zhailoo", n: null, nr: 0, auth: null, authForm: { login: "", password: "", name: "" }, summaryHidden: false, mode: null, panel: null, robberHex: null, disc: emptyRes(), give: emptyRes(), get: emptyRes(), bg: "wood", bt: "brick", yopA: "wood", yopB: "ore", mono: "grain", quick: false, quickSent: 0 };
@@ -56,6 +56,9 @@ function connect() {
     const m = JSON.parse(ev.data);
     if (m.t === "games") { games = m.games; if (!game) render(); }
     else if (m.t === "welcome") {
+      // Сервер обновился, пока вкладка была открыта: старый код может не понять новое состояние.
+      if (build && m.build && m.build !== build) return location.reload();
+      build = m.build;
       if (m.id !== myId) { myId = m.id; store.set("zh.id", myId); }
       if (m.expired) { token = ""; store.set("zh.token", ""); toast("Сессия истекла — войдите снова"); }
       setAccount(m.user);
@@ -351,7 +354,7 @@ function renderLobby() {
     <section class="sec" id="sec-rules">
       <h2>Как играть ${nomad ? "в «Кочёвку»" : "в «Жайлоо»"}</h2>
       <div class="steps">${(nomad ? nsteps : steps).map((t, i) => `<div class="panel"><span class="tn">${i + 1}</span><span>${t}</span></div>`).join("")}</div>
-      ${nomad ? "" : `<div class="costs">${costs.map(([ic, n, c]) => `<div class="panel">${ICON(ic)}<span><b>${n}</b>${costHTML(c)}</span></div>`).join("")}</div>`}
+      ${nomad ? `<h3 class="nrules-h">Подробные правила</h3><div class="panel nrules-page">${nRulesHTML()}</div>` : `<div class="costs">${costs.map(([ic, n, c]) => `<div class="panel">${ICON(ic)}<span><b>${n}</b>${costHTML(c)}</span></div>`).join("")}</div>`}
     </section>
     <p class="foot">Жайлоо — игра для своих. Играть можно и без аккаунта: гостя узнают по этому браузеру. Аккаунт нужен для рейтинга.</p>`;
 }
@@ -1077,6 +1080,7 @@ document.addEventListener("click", async (ev) => {
     return render();
   }
   if (d.pick) { const [key, k] = d.pick.split(":"); ui[key] = k; return render(); }
+  if (d.nrtab) { ui.nrTab = d.nrtab; return render(); }
   if (d.panel !== undefined) { ui.panel = d.panel && ui.panel !== d.panel ? d.panel : null; return render(); }
   if (d.mode) { ui.mode = ui.mode === d.mode ? null : d.mode; return render(); }
   if (d.v !== undefined) {

@@ -28,6 +28,8 @@ const STATIC = {
   "/nomad-client.js": ["public/nomad-client.js", "text/javascript; charset=utf-8"],
   "/favicon.svg": ["public/favicon.svg", "image/svg+xml"],
 };
+// Версия клиента — хеш статики на момент запуска. Вкладка, открытая до обновления, увидит другую версию и перезагрузится.
+const BUILD = crypto.createHash("sha256").update(Object.values(STATIC).map(([f]) => fs.readFileSync(path.join(__dirname, f))).join("\0")).digest("hex").slice(0, 12);
 
 // У каждой игры свой модуль правил: «Жайлоо» (кубики) или «Кочёвка» (тайлы).
 const GAMES = { zhailoo: L, nomad: N };
@@ -209,7 +211,7 @@ function handle(ws, msg) {
         ws.playerId = byPid.has(msg.id) ? crypto.randomUUID() : msg.id;
         ws.name = cleanName(msg.name);
       }
-      send(ws, { t: "welcome", id: ws.playerId, user: u ? pub(u) : null, expired: !!msg.token && !u });
+      send(ws, { t: "welcome", id: ws.playerId, user: u ? pub(u) : null, expired: !!msg.token && !u, build: BUILD });
       send(ws, { t: "top", top: top() });
       send(ws, { t: "games", games: [...games.values()].sort((a, b) => b.createdAt - a.createdAt).slice(0, 60).map(summary) });
       return;

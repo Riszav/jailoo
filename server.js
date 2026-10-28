@@ -5,6 +5,7 @@ const crypto = require("crypto");
 const { promisify } = require("util");
 const { WebSocketServer } = require("ws");
 const L = require("./shared/logic.js");
+const N = require("./shared/nomad.js");
 const db = require("./db.js");
 
 const PORT = Number(process.env.PORT) || 3000;
@@ -23,8 +24,14 @@ const STATIC = {
   "/style.css": ["public/style.css", "text/css; charset=utf-8"],
   "/client.js": ["public/client.js", "text/javascript; charset=utf-8"],
   "/logic.js": ["shared/logic.js", "text/javascript; charset=utf-8"],
+  "/nomad.js": ["shared/nomad.js", "text/javascript; charset=utf-8"],
+  "/nomad-client.js": ["public/nomad-client.js", "text/javascript; charset=utf-8"],
   "/favicon.svg": ["public/favicon.svg", "image/svg+xml"],
 };
+
+// У каждой игры свой модуль правил: «Жайлоо» (кубики) или «Кочёвка» (тайлы).
+const GAMES = { zhailoo: L, nomad: N };
+const R = (g) => (g && g.game === "nomad" ? N : L);
 
 const games = new Map();
 const clients = new Set();
@@ -35,7 +42,7 @@ async function load() {
   await db.init();
   for (const g of await db.all("games")) {
     // После перезапуска у всех текущий отрезок таймера начинается заново.
-    const t = g.status === "play" ? L.phaseTime(g) : 0;
+    const t = g.status === "play" ? R(g).phaseTime(g) : 0;
     if (t && !g.paused) g.deadline = Date.now() + t * 1000;
     games.set(g.code, g);
   }
@@ -78,6 +85,7 @@ const cleanName = (n) => String(n || "").replace(/[\u0000-\u001f]/g, "").trim().
 
 function viewFor(game, viewerId) {
   if (game.status !== "play") return game;
+  if (game.game === "nomad") return nomadView(game);
   const v = structuredClone(game);
   const me = v.players.findIndex((p) => p.id === viewerId);
   for (const k in v.steals) if (me !== v.steals[k].t && me !== v.steals[k].v) delete v.steals[k].r;
@@ -104,9 +112,20 @@ function viewFor(game, viewerId) {
   return v;
 }
 
+// В «Кочёвке» скрыт только порядок тайлов в мешке.
+function nomadView(game) {
+  const v = { ...game, deck: [], deckCount: game.deck.length };
+  v.timeLeft = game.paused ? game.pausedLeft ?? null : game.deadline ? Math.max(0, game.deadline - Date.now()) : null;
+  delete v.deadline;
+  delete v.pausedLeft;
+  delete v.timerKey;
+  return v;
+}
+
 function summary(g) {
   return {
     code: g.code,
+    game: g.game || "zhailoo",
     status: g.status,
     createdAt: g.createdAt,
     host: g.host,
@@ -154,11 +173,11 @@ function touchTimer(g, bonus) {
     g.deadline = now + g.pausedLeft;
     delete g.pausedLeft;
   }
-  const key = L.turnKey(g), full = L.phaseTime(g) * 1000, fresh = key !== g.timerKey;
+  const key = R(g).turnKey(g), full = R(g).phaseTime(g) * 1000, fresh = key !== g.timerKey;
   g.timerKey = key;
   if (!full) delete g.deadline;
   else if (fresh || !g.deadline) g.deadline = now + full;
-  else if (bonus) g.deadline = Math.min(g.deadline + L.TIMER.bonus * 1000, now + full);
+  else if (bonus && R(g).TIMER.bonus) g.deadline = Math.min(g.deadline + R(g).TIMER.bonus * 1000, now + full);
 }
 
 function changed(code, bonus) {
@@ -224,7 +243,7 @@ function handle(ws, msg) {
       return send(ws, { t: "top", top: top() });
     case "create": {
       if (!ws.playerId) return;
-      const g = L.newGame(genCode(), ws.playerId);
+      const g = (GAMES[msg.game] || L).newGame(genCode(), ws.playerId);
       g.names = {};
       rememberName(g, ws);
       games.set(g.code, g);
@@ -263,7 +282,7 @@ function handle(ws, msg) {
       if (!g || !ws.playerId) return send(ws, { t: "error", message: "Игра не открыта" });
       let next;
       try {
-        next = L.apply(g, ws.playerId, msg.action || {});
+        next = msg.action?.type === "setGame" ? switchGame(g, ws.playerId, msg.action.game) : R(g).apply(g, ws.playerId, msg.action || {});
       } catch (e) {
         return send(ws, { t: "error", message: e.message });
       }
@@ -287,6 +306,20 @@ function handle(ws, msg) {
     default:
       send(ws, { t: "error", message: "Неизвестная команда" });
   }
+}
+
+// Создатель комнаты меняет игру до старта: игроки, боты и настройки таймера переезжают в новую комнату.
+function switchGame(g, actor, kind) {
+  const M = GAMES[kind];
+  if (!M) throw new Error("Неизвестная игра");
+  if (g.status !== "lobby") throw new Error("Игра уже началась");
+  if (g.host !== actor) throw new Error("Это может только создатель игры");
+  if ((g.game || "zhailoo") === kind) return g;
+  if (g.players.length > M.MAX_PLAYERS) throw new Error(`В эту игру — не больше ${M.MAX_PLAYERS} игроков, уберите лишних`);
+  const n = M.newGame(g.code, g.host);
+  n.game = kind;
+  n.players = g.players.map((p) => Object.assign(M.newPlayer(p.id, p.bot, p.name), p.level ? { level: p.level } : {}));
+  return Object.assign(n, { createdAt: g.createdAt, names: g.names, seq: g.seq, turnTime: g.turnTime });
 }
 
 // --- аккаунты ---
@@ -364,7 +397,7 @@ async function auth(ws, msg) {
 // Аккаунт, отдавший место боту, получает результат своего места.
 function rate(g) {
   g.rated = true;
-  const res = L.results(g), n = res.length;
+  const res = R(g).results(g), n = res.length;
   const seats = res.map((r) => {
     const p = g.players[r.i], u = byPid.get(p.bot ? p.was : p.id);
     return { r, u, rating: u ? u.rating : p.bot && !p.was ? BOT_RATING[p.level || "medium"] : START_RATING };
@@ -420,14 +453,14 @@ function botTick() {
   const now = Date.now();
   for (const g of games.values()) {
     if (g.status !== "play" || g.paused) continue;
-    const bot = L.botPending(g) >= 0;
+    const rules = R(g), bot = rules.botPending(g) >= 0;
     if (!bot && !(g.deadline && now > g.deadline)) continue;
     let next;
     try {
-      next = bot ? L.botStep(g) : L.timeoutStep(g);
+      next = bot ? rules.botStep(g) : rules.timeoutStep(g);
     } catch (e) {
       console.error(`${bot ? "Бот завис" : "Не удалось доиграть ход по таймеру"} в игре ${g.code}:`, e.message);
-      if (!bot) g.deadline = now + (L.phaseTime(g) || L.TIMER.roll) * 1000;
+      if (!bot) g.deadline = now + (rules.phaseTime(g) || 5) * 1000;
       continue;
     }
     if (!next) continue;

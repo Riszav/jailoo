@@ -19,7 +19,8 @@ if (token) try { account = JSON.parse(store.get("zh.account")); } catch {}
 
 let ws = null, connected = false, retry = 0;
 let games = [], game = null, currentCode = null;
-let ui = { auth: null, authForm: { login: "", password: "", name: "" }, summaryHidden: false, mode: null, panel: null, robberHex: null, disc: emptyRes(), give: emptyRes(), get: emptyRes(), bg: "wood", bt: "brick", yopA: "wood", yopB: "ore", mono: "grain", quick: false, quickSent: 0 };
+// gk — какую игру создаём из лобби: «Жайлоо» или «Кочёвка»; n — тайл, который игрок примеряет на поле «Кочёвки».
+let ui = { gk: store.get("zh.gk") === "nomad" ? "nomad" : "zhailoo", n: null, nr: 0, auth: null, authForm: { login: "", password: "", name: "" }, summaryHidden: false, mode: null, panel: null, robberHex: null, disc: emptyRes(), give: emptyRes(), get: emptyRes(), bg: "wood", bt: "brick", yopA: "wood", yopB: "ore", mono: "grain", quick: false, quickSent: 0 };
 let toastTimer = null;
 // Таймер считаем от момента получения состояния: часы клиента и сервера могут не совпадать.
 let timerEnd = null;
@@ -97,7 +98,8 @@ function connect() {
       game = m.game;
       cacheGame(game);
       timerEnd = game.timeLeft != null ? Date.now() + game.timeLeft : null;
-      noticeChanges(old, game);
+      if (game.game === "nomad") nomadNotice(old, game);
+      else noticeChanges(old, game);
       if (game.phase !== "discard") ui.disc = emptyRes();
       if (game.phase !== "main" || game.cur !== myIndex()) ui.mode = null;
       if (game.cur !== myIndex()) ui.panel = null;
@@ -231,6 +233,7 @@ function render() {
   }
 }
 function renderView() {
+  document.body.classList.toggle("nomad", !!game && game.game === "nomad" && game.status !== "lobby");
   const me = $("me");
   me.innerHTML = account
     ? `${ava(account.name, "#f2b53a", "sm")}<span>${esc(account.name)}</span><span class="rating" title="Рейтинг — растёт за победы, падает за поражения">${account.rating}</span><button class="btn ghost small" data-a="logout" title="Выйти из аккаунта">${ICON("exit")}<span class="tl">Выйти</span></button>`
@@ -287,11 +290,26 @@ function renderLobby() {
   const open = games.filter((g) => g.status === "lobby" && !isMine(g));
   const playing = games.filter((g) => g.status === "play");
   const mine = games.filter(isMine);
-  const row = (g, label, cls) => `<div class="room"><span class="code">${esc(g.code)}</span>
-    <span class="avatars">${g.players.map((p, i) => ava(p.name, COLORS[i], "sm")).join("")}</span>
-    <span class="names">${g.status === "lobby" ? '<span class="badge">ждёт игроков</span> ' : ""}${(g.mods || []).map((k) => `<span class="badge" title="${esc(MODS[k]?.text || "")}">${esc(MODS[k]?.name || k)}</span> `).join("")}${g.players.map((p) => esc(p.name)).join(", ")}</span>
-    <span class="seats">${g.players.length}/${MAX_PLAYERS}</span>
-    <span class="row"><button class="btn small ${cls}" data-open="${esc(g.code)}">${label}</button>${g.host === myId ? delBtn(g.code, true) : ""}</span></div>`;
+  const row = (g, label, cls) => { const nomad = g.game === "nomad", gm = nomad ? NOMAD.MODS : MODS; return `<div class="room"><span class="code">${esc(g.code)}</span>
+    <span class="avatars">${g.players.map((p, i) => ava(p.name, (nomad ? NOMAD.COLORS : COLORS)[i], "sm")).join("")}</span>
+    <span class="names"><span class="badge game-${nomad ? "nomad" : "zhailoo"}">${nomad ? "Кочёвка" : "Жайлоо"}</span> ${g.status === "lobby" ? '<span class="badge">ждёт игроков</span> ' : ""}${(g.mods || []).map((k) => `<span class="badge" title="${esc(gm[k]?.text || "")}">${esc(gm[k]?.name || k)}</span> `).join("")}${g.players.map((p) => esc(p.name)).join(", ")}</span>
+    <span class="seats">${g.players.length}/${nomad ? NOMAD.MAX_PLAYERS : MAX_PLAYERS}</span>
+    <span class="row"><button class="btn small ${cls}" data-open="${esc(g.code)}">${label}</button>${g.host === myId ? delBtn(g.code, true) : ""}</span></div>`; };
+  const nomad = ui.gk === "nomad";
+  if (nomad) nEnsureDefs();
+  const nsteps = [
+    "Каждый ход тянется квадратный тайл с аилами, тропами, пастбищами и курганами. Положите его к уже лежащим так, чтобы края совпали.",
+    "Подходящие клетки подсвечены, а цифра на клетке подсказывает, сколько очков принесёт лучший ход туда.",
+    "На объект нового тайла можно поставить чабана, если там ещё никого нет. Или перекочевать: перегнать своего чабана с соседнего тайла.",
+    "Достроили аил, тропу или курган — очки получает тот, у кого там больше чабанов, остальные — половину. Чабаны идут домой.",
+    "Пастбища считаются дважды: в конце лета, на половине мешка, и в конце игры. Очки дают отары и размер пастбища.",
+    "Побеждает тот, кто первым набрал цель, или у кого больше очков, когда тайлы кончились.",
+  ];
+  const tileOf = (id) => NOMAD.TILES.findIndex((t) => t.id === id);
+  const gopt = (k, title, sub, art) => `<button class="gopt ${ui.gk === k ? "on" : ""}" data-gk="${k}" role="radio" aria-checked="${ui.gk === k}">${art}<span><b>${title}</b>${sub}</span></button>`;
+  const gpick = `<div class="gpick" role="radiogroup" aria-label="Во что играем">
+    ${gopt("zhailoo", "Жайлоо", "кубики, ресурсы, торговля", `<span class="gart hex">${ICON("logo")}</span>`)}
+    ${gopt("nomad", "Кочёвка", "тайлы, чабаны, сезоны", `<span class="gart tiles">${nomad ? ["capT", "ail2o", "kurgan", "curveH"].map((id, i) => nTileSVG(tileOf(id), i % 4)).join("") : ICON("grid")}</span>`)}</div>`;
   const steps = [
     "Поле — 19, 37 или 61 участок пастбищ: размер карты выбирает создатель комнаты. Каждый даёт свой ресурс: лес, глину, шерсть, зерно или руду; степь не даёт ничего.",
     "В начале каждый ставит по две юрты с тропой. Вторая юрта сразу приносит ресурсы соседних участков.",
@@ -304,8 +322,10 @@ function renderLobby() {
   $("view").innerHTML = `
     <section class="hero" id="sec-play">${heroBg()}
       <div class="hero-in">
-        <h1>Юрты, тропы и буран на <em>горных пастбищах</em></h1>
-        <p class="lead">Бесплатная онлайн-настолка для 2–8 игроков. Зовите друзей по ссылке или играйте против ботов прямо в браузере.</p>
+        ${nomad ? `<h1>Аилы, тропы и чабаны на <em>летних пастбищах</em></h1>
+        <p class="lead">Выкладывайте тайлы, стройте аилы и делите пастбища. 2–6 игроков, друзья по ссылке или боты прямо в браузере.</p>` : `<h1>Юрты, тропы и буран на <em>горных пастбищах</em></h1>
+        <p class="lead">Бесплатная онлайн-настолка для 2–8 игроков. Зовите друзей по ссылке или играйте против ботов прямо в браузере.</p>`}
+        ${gpick}
         <div class="playbox">
           <label for="myname">Ваше имя</label>
           <div class="namerow"><input id="myname" maxlength="24" value="${esc(ui.nameDraft ?? myName)}" placeholder="Например, Айгуль"><button class="btn ghost" data-a="rename">Сохранить</button></div>
@@ -329,9 +349,9 @@ function renderLobby() {
       <div class="panel rooms"><div class="rooms-h"><h3>Лучшие игроки</h3>${account ? `<span class="hint">Ваш рейтинг: <b>${account.rating}</b></span>` : `<button class="btn small blue" data-a="authopen">Войти, чтобы попасть в рейтинг</button>`}</div>${topHTML()}</div>
     </section>
     <section class="sec" id="sec-rules">
-      <h2>Как играть</h2>
-      <div class="steps">${steps.map((t, i) => `<div class="panel"><span class="tn">${i + 1}</span><span>${t}</span></div>`).join("")}</div>
-      <div class="costs">${costs.map(([ic, n, c]) => `<div class="panel">${ICON(ic)}<span><b>${n}</b>${costHTML(c)}</span></div>`).join("")}</div>
+      <h2>Как играть ${nomad ? "в «Кочёвку»" : "в «Жайлоо»"}</h2>
+      <div class="steps">${(nomad ? nsteps : steps).map((t, i) => `<div class="panel"><span class="tn">${i + 1}</span><span>${t}</span></div>`).join("")}</div>
+      ${nomad ? "" : `<div class="costs">${costs.map(([ic, n, c]) => `<div class="panel">${ICON(ic)}<span><b>${n}</b>${costHTML(c)}</span></div>`).join("")}</div>`}
     </section>
     <p class="foot">Жайлоо — игра для своих. Играть можно и без аккаунта: гостя узнают по этому браузеру. Аккаунт нужен для рейтинга.</p>`;
 }
@@ -343,8 +363,9 @@ function mapThumb(R) {
 }
 
 function renderRoom() {
-  const s = game, me = myIndex(), host = s.host === myId;
-  const R = mapRadius(s), cfg = BOARD[R], tooMany = s.players.length > cfg.maxPlayers;
+  const s = game, me = myIndex(), host = s.host === myId, nomad = s.game === "nomad";
+  const maxP = nomad ? NOMAD.MAX_PLAYERS : MAX_PLAYERS, colors = nomad ? NOMAD.COLORS : COLORS, gmods = nomad ? NOMAD.MODS : MODS;
+  const R = mapRadius(s), cfg = BOARD[R], tooMany = !nomad && s.players.length > cfg.maxPlayers;
   const autoR = mapRadius({ players: s.players });
   const maps = MAP_SIZES.map((k) => {
     const sel = (s.mapSize || "auto") === k, r = k === "auto" ? autoR : k;
@@ -355,39 +376,49 @@ function renderRoom() {
     const sel = (s.turnTime ?? 0) === t;
     return `<button class="topt ${sel ? "on" : ""}" data-timer="${t}" aria-pressed="${sel}" ${host ? "" : "disabled"}>${t ? (t < 120 ? `${t} с` : `${t / 60} мин`) : "Без таймера"}</button>`;
   }).join("");
-  const mods = Object.entries(MODS).map(([k, m]) => {
+  const targets = NOMAD.TARGETS.map((t) => {
+    const sel = (s.target ?? 0) === t;
+    return `<button class="topt ${sel ? "on" : ""}" data-target="${t}" aria-pressed="${sel}" ${host ? "" : "disabled"}>${t ? `${t} очков` : "Весь мешок"}</button>`;
+  }).join("");
+  const kinds = [["zhailoo", "Жайлоо", "кубики и ресурсы, 2–8"], ["nomad", "Кочёвка", "тайлы и чабаны, 2–6"]].map(([k, n, sub]) => {
+    const sel = (s.game || "zhailoo") === k;
+    return `<button class="mapopt gk ${sel ? "on" : ""}" data-setgame="${k}" aria-pressed="${sel}" ${host ? "" : "disabled"}><b>${n}</b><span>${sub}</span></button>`;
+  }).join("");
+  const mods = Object.entries(gmods).map(([k, m]) => {
     const on = mod(s, k);
     return `<button class="modopt ${on ? "on" : ""}" data-mod="${k}" aria-pressed="${on}" ${host ? "" : "disabled"}><span class="tick" aria-hidden="true">${on ? "✓" : ""}</span><span><b>${m.name}</b>${m.text}</span></button>`;
   }).join("");
-  const helperList = mod(s, "helpers") ? `<details class="hlist"><summary>Какие бывают помощники</summary>${Object.values(HELPERS).map((h) => `<p><b>${h.name}</b> — ${h.text}</p>`).join("")}</details>` : "";
-  document.title = `Игра ${s.code} — Жайлоо`;
+  const helperList = !nomad && mod(s, "helpers") ? `<details class="hlist"><summary>Какие бывают помощники</summary>${Object.values(HELPERS).map((h) => `<p><b>${h.name}</b> — ${h.text}</p>`).join("")}</details>` : "";
+  document.title = `${nomad ? "Кочёвка" : "Игра"} ${s.code} — Жайлоо`;
   document.body.classList.remove("ingame");
   const link = `${location.origin}${location.pathname}#${s.code}`;
   // Сложность бота: три кнопки-ступеньки, видны только создателю.
   const levelPick = (i, cur) => `<span class="lvl" role="group" aria-label="Сложность бота">${LEVELS.map((l) => `<button class="${l === cur ? "on" : ""}" data-lvl="${i}:${l}" aria-pressed="${l === cur}" title="Сложность — ${LEVEL_RU[l]}">${LEVEL_RU[l][0].toUpperCase()}${LEVEL_RU[l].slice(1)}</button>`).join("")}</span>`;
-  const slots = [...Array(MAX_PLAYERS).keys()].map((i) => {
+  const slots = [...Array(maxP).keys()].map((i) => {
     const p = s.players[i];
     if (!p) return `<div class="slot free"><span class="ava ghost">+</span><span class="nm muted">Свободное место</span>${host ? `<button class="btn small" data-a="addBot">${ICON("bot")}Бот</button>` : ""}</div>`;
-    return `<div class="slot">${ava(nameOf(s, i), COLORS[i])}<span class="nm">${esc(nameOf(s, i))}${p.bot && !host ? ` <span class="badge">бот · ${LEVEL_RU[p.level || "medium"]}</span>` : p.bot ? ' <span class="badge">бот</span>' : ""}${p.id === s.host ? ' <span class="badge gold">создатель</span>' : ""}${p.id === myId ? ' <span class="badge">вы</span>' : ""}</span>${host && p.bot ? levelPick(i, p.level || "medium") : ""}${host && p.id !== myId ? `<button class="btn small red" data-kick="${i}">Убрать</button>` : ""}</div>`;
+    return `<div class="slot">${ava(nameOf(s, i), colors[i])}<span class="nm">${esc(nameOf(s, i))}${p.bot && !host ? ` <span class="badge">бот · ${LEVEL_RU[p.level || "medium"]}</span>` : p.bot ? ' <span class="badge">бот</span>' : ""}${p.id === s.host ? ' <span class="badge gold">создатель</span>' : ""}${p.id === myId ? ' <span class="badge">вы</span>' : ""}</span>${host && p.bot ? levelPick(i, p.level || "medium") : ""}${host && p.id !== myId ? `<button class="btn small red" data-kick="${i}">Убрать</button>` : ""}</div>`;
   }).join("");
   $("view").innerHTML = `<div class="roomgrid">
-    <div class="panel pad"><h2>Игроки <span class="muted">${s.players.length}/${MAX_PLAYERS}</span></h2><div class="slots">${slots}</div>
+    <div class="panel pad"><h2>Игроки <span class="muted">${s.players.length}/${maxP}</span></h2><div class="slots">${slots}</div>
       ${host ? "" : `<p class="hint">Игру начинает создатель комнаты.</p>`}
       <h3><label for="myname">Ваше имя</label></h3>
       <div class="namerow"><input id="myname" maxlength="24" value="${esc(ui.nameDraft ?? myName)}" placeholder="Например, Айгуль"><button class="btn" data-a="rename">Сохранить</button></div></div>
     <div class="panel pad"><h3>Код комнаты</h3><span class="bigcode">${esc(s.code)}</span>
       <h3>Пригласить друзей</h3>
       <div class="linkrow"><input readonly value="${esc(link)}" aria-label="Ссылка на игру"><button class="btn" data-copy="${esc(link)}">Копировать</button></div>
-      <p class="hint">До ${MAX_PLAYERS} игроков; пустые места можно отдать ботам.</p>
-      <h3>Размер карты</h3>
-      <div class="maps">${maps}</div>
+      <p class="hint">До ${maxP} игроков; пустые места можно отдать ботам.${nomad ? " Цвета фигурок раздаются по порядку хода." : ""}</p>
+      <h3>Игра</h3>
+      <div class="maps two">${kinds}</div>
+      ${nomad ? `<h3>Цель</h3><div class="topts">${targets}</div>` : `<h3>Размер карты</h3>
+      <div class="maps">${maps}</div>`}
       <h3>Таймер хода</h3>
       <div class="topts">${timers}</div>
       <h3>Дополнения</h3>
       <div class="mods">${mods}</div>${helperList}
-      <p class="hint">${host ? "" : "Карту, таймер и дополнения выбирает создатель комнаты. "}Кубики бросаются сами через ${TIMER.roll} с. С таймером на сброс карт даётся ${TIMER.discard} с, каждое действие в ход добавляет ${TIMER.bonus} с. Время вышло — ход доигрывается автоматически.</p>
+      ${nomad ? `<p class="hint">${host ? "" : "Игру, цель, таймер и дополнения выбирает создатель комнаты. "}Время хода вышло — тайл за игрока положит бот. Дополнения можно сочетать.</p>` : `<p class="hint">${host ? "" : "Карту, таймер и дополнения выбирает создатель комнаты. "}Кубики бросаются сами через ${TIMER.roll} с. С таймером на сброс карт даётся ${TIMER.discard} с, каждое действие в ход добавляет ${TIMER.bonus} с. Время вышло — ход доигрывается автоматически.</p>`}
       ${tooMany ? `<p class="warn">${cfg.name} карта рассчитана максимум на ${cfg.maxPlayers} игроков — выберите карту побольше или уберите лишних.</p>` : ""}
-      ${me < 0 ? `<button class="btn green big" data-a="join" ${s.players.length >= MAX_PLAYERS || !myName ? "disabled" : ""}>Сесть за стол</button>` : ""}
+      ${me < 0 ? `<button class="btn green big" data-a="join" ${s.players.length >= maxP || !myName ? "disabled" : ""}>Сесть за стол</button>` : ""}
       ${me < 0 && !myName ? `<p class="hint">Чтобы сесть за стол, укажите имя слева.</p>` : ""}
       ${host ? `<button class="btn green big" data-a="start" ${s.players.length < 2 || tooMany ? "disabled" : ""}>Начать игру</button>` : ""}
       <div class="row">${me >= 0 && !host ? `<button class="btn red small" data-a="leave">${ICON("exit")}Выйти из комнаты</button>` : `<button class="btn small" data-a="back">К списку комнат</button>`}${host ? delBtn(s.code) : ""}</div>
@@ -577,6 +608,7 @@ function phaseHint(s, me) {
 }
 
 function renderGame() {
+  if (game.game === "nomad") return renderNomad();
   document.body.classList.add("ingame");
   const s = game, me = myIndex(), P = s.players[me], live = s.status === "play" && !s.paused, mine = me >= 0 && me === s.cur && live;
   const cur = s.players[s.cur];
@@ -991,12 +1023,15 @@ document.addEventListener("click", async (ev) => {
   if (d.a === "summary") { ui.summaryHidden = false; return render(); }
   if (d.a === "hidesummary") { ui.summaryHidden = true; return render(); }
   if (d.a === "theme") return setTheme(theme() === "dark" ? "light" : "dark", true);
-  if (d.a === "create") { if (game || ensureName()) send({ t: "create" }); return; }
+  if (d.gk) { ui.gk = d.gk; store.set("zh.gk", d.gk); return render(); }
+  if (d.setgame) return act({ type: "setGame", game: d.setgame });
+  if (d.target !== undefined) return act({ type: "setTarget", target: +d.target });
+  if (d.a === "create") { if (game || ensureName()) send({ t: "create", game: ui.gk }); return; }
   if (d.a === "quick") {
     if (!ensureName()) return;
     ui.quick = true;
     ui.quickSent = 0;
-    return send({ t: "create" });
+    return send({ t: "create", game: ui.gk });
   }
   if (d.a === "joincode") return openGame($("joincode").value || "");
   if (d.open) return openGame(d.open);

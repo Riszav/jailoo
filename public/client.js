@@ -19,8 +19,9 @@ if (token) try { account = JSON.parse(store.get("zh.account")); } catch {}
 
 let ws = null, connected = false, retry = 0, build = null;
 let games = [], game = null, currentCode = null;
-// gk — какую игру создаём из лобби: «Жайлоо» или «Кочёвка»; n — тайл, который игрок примеряет на поле «Кочёвки».
-let ui = { gk: store.get("zh.gk") === "nomad" ? "nomad" : "zhailoo", n: null, nr: 0, auth: null, authForm: { login: "", password: "", name: "" }, summaryHidden: false, mode: null, panel: null, robberHex: null, disc: emptyRes(), give: emptyRes(), get: emptyRes(), bg: "wood", bt: "brick", yopA: "wood", yopB: "ore", mono: "grain", quick: false, quickSent: 0 };
+// gk — какую игру создаём из лобби: «Жайлоо», «Кочёвка» или «Мухтар»; n — тайл, который игрок примеряет на поле «Кочёвки»;
+// mk — карта, режим и цель, которые игрок выбрал в «Мухтаре».
+let ui = { gk: ["nomad", "mukhtar"].includes(store.get("zh.gk")) ? store.get("zh.gk") : "zhailoo", mk: null, n: null, nr: 0, auth: null, authForm: { login: "", password: "", name: "" }, summaryHidden: false, mode: null, panel: null, robberHex: null, disc: emptyRes(), give: emptyRes(), get: emptyRes(), bg: "wood", bt: "brick", yopA: "wood", yopB: "ore", mono: "grain", quick: false, quickSent: 0 };
 let toastTimer = null;
 // Таймер считаем от момента получения состояния: часы клиента и сервера могут не совпадать.
 let timerEnd = null;
@@ -102,6 +103,7 @@ function connect() {
       cacheGame(game);
       timerEnd = game.timeLeft != null ? Date.now() + game.timeLeft : null;
       if (game.game === "nomad") nomadNotice(old, game);
+      else if (game.game === "mukhtar") mukhtarNotice(old, game);
       else noticeChanges(old, game);
       if (game.phase !== "discard") ui.disc = emptyRes();
       if (game.phase !== "main" || game.cur !== myIndex()) ui.mode = null;
@@ -237,6 +239,7 @@ function render() {
 }
 function renderView() {
   document.body.classList.toggle("nomad", !!game && game.game === "nomad" && game.status !== "lobby");
+  document.body.classList.toggle("mukhtar", !!game && game.game === "mukhtar" && game.status !== "lobby");
   const me = $("me");
   me.innerHTML = account
     ? `${ava(account.name, "#f2b53a", "sm")}<span>${esc(account.name)}</span><span class="rating" title="Рейтинг — растёт за победы, падает за поражения">${account.rating}</span><button class="btn ghost small" data-a="logout" title="Выйти из аккаунта">${ICON("exit")}<span class="tl">Выйти</span></button>`
@@ -286,6 +289,21 @@ function topHTML() {
   </tbody></table></div>`;
 }
 
+// Игры сайта: название, подпись в комнате и модуль правил (цвета, дополнения, число мест).
+const GKIND = {
+  zhailoo: { name: "Жайлоо", sub: "кубики и ресурсы, 2–8", rules: () => ({ COLORS, MODS, MAX_PLAYERS }) },
+  nomad: { name: "Кочёвка", sub: "тайлы и чабаны, 2–6", rules: () => NOMAD },
+  mukhtar: { name: "Мухтар", sub: "погоня и предательство, 2–6", rules: () => MUKHTAR },
+};
+const MSTEPS = [
+  "Вы — волк из стаи, которая утащила ягнят из аила. Стая бежит по горной тропе к развилке, за ней гонится пёс Мухтар. От развилки тропы ведут к нескольким пещерам.",
+  "Все начинают с шагом, рысью и бегом, дальше карты приходят из колоды. В свой ход сыграйте карту, сбросьте ненужные или обменяйтесь картой с другим волком вслепую. После хода можно взять карту из открытого ряда.",
+  "Громкие карты быстрее, но шумят. В конце раунда Мухтар пробегает столько клеток, каков лай раунда, и ловит тех, кого догнал. Дальше развилки он не бежит, а караулит её.",
+  "В каждой пещере своё число мест, и его не знает никто. Нажмите на пещеру, чтобы выбрать, куда бежать. Один раз за игру можно шепнуть у пещеры и тайно узнать её вместимость, а потом сказать правду или соврать.",
+  "Пойманный волк становится тайганом и помогает Мухтару. А сытый Мухтар следующий раунд бежит медленнее — сдать соседа выгодно всем остальным.",
+  "Спасает только полная пещера. Неполная не спасёт никого. Волк в пещере зазывает к себе, а волк снаружи может обрушить «Завалом» место в чужой. Выигрывает тот, у кого больше очков.",
+];
+
 function renderLobby() {
   document.title = "Жайлоо";
   document.body.classList.remove("ingame");
@@ -293,10 +311,10 @@ function renderLobby() {
   const open = games.filter((g) => g.status === "lobby" && !isMine(g));
   const playing = games.filter((g) => g.status === "play");
   const mine = games.filter(isMine);
-  const row = (g, label, cls) => { const nomad = g.game === "nomad", gm = nomad ? NOMAD.MODS : MODS; return `<div class="room"><span class="code">${esc(g.code)}</span>
-    <span class="avatars">${g.players.map((p, i) => ava(p.name, (nomad ? NOMAD.COLORS : COLORS)[i], "sm")).join("")}</span>
-    <span class="names"><span class="badge game-${nomad ? "nomad" : "zhailoo"}">${nomad ? "Кочёвка" : "Жайлоо"}</span> ${g.status === "lobby" ? '<span class="badge">ждёт игроков</span> ' : ""}${(g.mods || []).map((k) => `<span class="badge" title="${esc(gm[k]?.text || "")}">${esc(gm[k]?.name || k)}</span> `).join("")}${g.players.map((p) => esc(p.name)).join(", ")}</span>
-    <span class="seats">${g.players.length}/${nomad ? NOMAD.MAX_PLAYERS : MAX_PLAYERS}</span>
+  const row = (g, label, cls) => { const k = GKIND[g.game] ? g.game : "zhailoo", K = GKIND[k]; return `<div class="room"><span class="code">${esc(g.code)}</span>
+    <span class="avatars">${g.players.map((p, i) => ava(p.name, K.rules().COLORS[i], "sm")).join("")}</span>
+    <span class="names"><span class="badge game-${k}">${K.name}</span> ${g.status === "lobby" ? '<span class="badge">ждёт игроков</span> ' : ""}${(g.mods || []).map((m) => `<span class="badge" title="${esc(K.rules().MODS[m]?.text || "")}">${esc(K.rules().MODS[m]?.name || m)}</span> `).join("")}${g.players.map((p) => esc(p.name)).join(", ")}</span>
+    <span class="seats">${g.players.length}/${K.rules().MAX_PLAYERS}</span>
     <span class="row"><button class="btn small ${cls}" data-open="${esc(g.code)}">${label}</button>${g.host === myId ? delBtn(g.code, true) : ""}</span></div>`; };
   const nomad = ui.gk === "nomad";
   if (nomad) nEnsureDefs();
@@ -312,7 +330,9 @@ function renderLobby() {
   const gopt = (k, title, sub, art) => `<button class="gopt ${ui.gk === k ? "on" : ""}" data-gk="${k}" role="radio" aria-checked="${ui.gk === k}">${art}<span><b>${title}</b>${sub}</span></button>`;
   const gpick = `<div class="gpick" role="radiogroup" aria-label="Во что играем">
     ${gopt("zhailoo", "Жайлоо", "кубики, ресурсы, торговля", `<span class="gart hex">${ICON("logo")}</span>`)}
-    ${gopt("nomad", "Кочёвка", "тайлы, чабаны, сезоны", `<span class="gart tiles">${nomad ? ["capT", "ail2o", "kurgan", "curveH"].map((id, i) => nTileSVG(tileOf(id), i % 4)).join("") : ICON("grid")}</span>`)}</div>`;
+    ${gopt("nomad", "Кочёвка", "тайлы, чабаны, сезоны", `<span class="gart tiles">${nomad ? ["capT", "ail2o", "kurgan", "curveH"].map((id, i) => nTileSVG(tileOf(id), i % 4)).join("") : ICON("grid")}</span>`)}
+    ${gopt("mukhtar", "Мухтар", "погоня и предательство", `<span class="gart mart-dog"><svg viewBox="-.3 -.3 .6 .6" aria-hidden="true"><circle r=".29" fill="#3b2a1b"/><g transform="scale(1.35)">${mDogHead()}</g></svg></span>`)}</div>`;
+  const mukhtar = ui.gk === "mukhtar";
   const steps = [
     "Поле — 19, 37 или 61 участок пастбищ: размер карты выбирает создатель комнаты. Каждый даёт свой ресурс: лес, глину, шерсть, зерно или руду; степь не даёт ничего.",
     "В начале каждый ставит по две юрты с тропой. Вторая юрта сразу приносит ресурсы соседних участков.",
@@ -325,7 +345,8 @@ function renderLobby() {
   $("view").innerHTML = `
     <section class="hero" id="sec-play">${heroBg()}
       <div class="hero-in">
-        ${nomad ? `<h1>Аилы, тропы и чабаны на <em>летних пастбищах</em></h1>
+        ${mukhtar ? `<h1>Волки, ягнята и пёс <em>Мухтар</em> на горной тропе</h1>
+        <p class="lead">Бегите к пещерам вместе со стаей, но помните: мест в них на всех не хватит. 2–6 игроков, друзья по ссылке или боты.</p>` : nomad ? `<h1>Аилы, тропы и чабаны на <em>летних пастбищах</em></h1>
         <p class="lead">Выкладывайте тайлы, стройте аилы и делите пастбища. 2–6 игроков, друзья по ссылке или боты прямо в браузере.</p>` : `<h1>Юрты, тропы и буран на <em>горных пастбищах</em></h1>
         <p class="lead">Бесплатная онлайн-настолка для 2–8 игроков. Зовите друзей по ссылке или играйте против ботов прямо в браузере.</p>`}
         ${gpick}
@@ -352,9 +373,9 @@ function renderLobby() {
       <div class="panel rooms"><div class="rooms-h"><h3>Лучшие игроки</h3>${account ? `<span class="hint">Ваш рейтинг: <b>${account.rating}</b></span>` : `<button class="btn small blue" data-a="authopen">Войти, чтобы попасть в рейтинг</button>`}</div>${topHTML()}</div>
     </section>
     <section class="sec" id="sec-rules">
-      <h2>Как играть ${nomad ? "в «Кочёвку»" : "в «Жайлоо»"}</h2>
-      <div class="steps">${(nomad ? nsteps : steps).map((t, i) => `<div class="panel"><span class="tn">${i + 1}</span><span>${t}</span></div>`).join("")}</div>
-      ${nomad ? `<h3 class="nrules-h">Подробные правила</h3><div class="panel nrules-page">${nRulesHTML()}</div>` : `<div class="costs">${costs.map(([ic, n, c]) => `<div class="panel">${ICON(ic)}<span><b>${n}</b>${costHTML(c)}</span></div>`).join("")}</div>`}
+      <h2>Как играть ${mukhtar ? "в «Мухтара»" : nomad ? "в «Кочёвку»" : "в «Жайлоо»"}</h2>
+      <div class="steps">${(mukhtar ? MSTEPS : nomad ? nsteps : steps).map((t, i) => `<div class="panel"><span class="tn">${i + 1}</span><span>${t}</span></div>`).join("")}</div>
+      ${mukhtar ? `<h3 class="nrules-h">Подробные правила</h3><div class="panel nrules-page">${mRulesHTML()}</div>` : nomad ? `<h3 class="nrules-h">Подробные правила</h3><div class="panel nrules-page">${nRulesHTML()}</div>` : `<div class="costs">${costs.map(([ic, n, c]) => `<div class="panel">${ICON(ic)}<span><b>${n}</b>${costHTML(c)}</span></div>`).join("")}</div>`}
     </section>
     <p class="foot">Жайлоо — игра для своих. Играть можно и без аккаунта: гостя узнают по этому браузеру. Аккаунт нужен для рейтинга.</p>`;
 }
@@ -366,16 +387,16 @@ function mapThumb(R) {
 }
 
 function renderRoom() {
-  const s = game, me = myIndex(), host = s.host === myId, nomad = s.game === "nomad";
-  const maxP = nomad ? NOMAD.MAX_PLAYERS : MAX_PLAYERS, colors = nomad ? NOMAD.COLORS : COLORS, gmods = nomad ? NOMAD.MODS : MODS;
-  const R = mapRadius(s), cfg = BOARD[R], tooMany = !nomad && s.players.length > cfg.maxPlayers;
+  const s = game, me = myIndex(), host = s.host === myId, nomad = s.game === "nomad", mukhtar = s.game === "mukhtar";
+  const K = (GKIND[s.game] || GKIND.zhailoo).rules(), maxP = K.MAX_PLAYERS, colors = K.COLORS, gmods = K.MODS;
+  const R = mapRadius(s), cfg = BOARD[R], tooMany = !nomad && !mukhtar && s.players.length > cfg.maxPlayers;
   const autoR = mapRadius({ players: s.players });
   const maps = MAP_SIZES.map((k) => {
     const sel = (s.mapSize || "auto") === k, r = k === "auto" ? autoR : k;
     const sub = k === "auto" ? `сейчас ${BOARD[autoR].name.toLowerCase()}` : `${gOf({ size: k }).hexes.length} участков · до ${BOARD[k].maxPlayers}`;
     return `<button class="mapopt ${sel ? "on" : ""}" data-map="${k}" aria-pressed="${sel}" ${host ? "" : "disabled"}>${mapThumb(r)}<b>${k === "auto" ? "Авто" : BOARD[k].name}</b><span>${sub}</span></button>`;
   }).join("");
-  const timers = TURN_TIMES.map((t) => {
+  const timers = (mukhtar ? MUKHTAR.TURN_TIMES : TURN_TIMES).map((t) => {
     const sel = (s.turnTime ?? 0) === t;
     return `<button class="topt ${sel ? "on" : ""}" data-timer="${t}" aria-pressed="${sel}" ${host ? "" : "disabled"}>${t ? (t < 120 ? `${t} с` : `${t / 60} мин`) : "Без таймера"}</button>`;
   }).join("");
@@ -383,16 +404,20 @@ function renderRoom() {
     const sel = (s.target ?? 0) === t;
     return `<button class="topt ${sel ? "on" : ""}" data-target="${t}" aria-pressed="${sel}" ${host ? "" : "disabled"}>${t ? `${t} очков` : "Весь мешок"}</button>`;
   }).join("");
-  const kinds = [["zhailoo", "Жайлоо", "кубики и ресурсы, 2–8"], ["nomad", "Кочёвка", "тайлы и чабаны, 2–6"]].map(([k, n, sub]) => {
+  const kinds = Object.entries(GKIND).map(([k, { name, sub }]) => {
     const sel = (s.game || "zhailoo") === k;
-    return `<button class="mapopt gk ${sel ? "on" : ""}" data-setgame="${k}" aria-pressed="${sel}" ${host ? "" : "disabled"}><b>${n}</b><span>${sub}</span></button>`;
+    return `<button class="mapopt gk ${sel ? "on" : ""}" data-setgame="${k}" aria-pressed="${sel}" ${host ? "" : "disabled"}><b>${name}</b><span>${sub}</span></button>`;
+  }).join("");
+  const heads = MUKHTAR.HEADS.map((h) => {
+    const sel = (s.head ?? 5) === h;
+    return `<button class="topt ${sel ? "on" : ""}" data-mhead="${h}" aria-pressed="${sel}" ${host ? "" : "disabled"}>${h} ${plural(h, "клетка", "клетки", "клеток")}${h === 3 ? " · трудно" : h === 7 ? " · легко" : ""}</button>`;
   }).join("");
   const mods = Object.entries(gmods).map(([k, m]) => {
     const on = mod(s, k);
     return `<button class="modopt ${on ? "on" : ""}" data-mod="${k}" aria-pressed="${on}" ${host ? "" : "disabled"}><span class="tick" aria-hidden="true">${on ? "✓" : ""}</span><span><b>${m.name}</b>${m.text}</span></button>`;
   }).join("");
   const helperList = !nomad && mod(s, "helpers") ? `<details class="hlist"><summary>Какие бывают помощники</summary>${Object.values(HELPERS).map((h) => `<p><b>${h.name}</b> — ${h.text}</p>`).join("")}</details>` : "";
-  document.title = `${nomad ? "Кочёвка" : "Игра"} ${s.code} — Жайлоо`;
+  document.title = `${mukhtar ? "Мухтар" : nomad ? "Кочёвка" : "Игра"} ${s.code} — Жайлоо`;
   document.body.classList.remove("ingame");
   const link = `${location.origin}${location.pathname}#${s.code}`;
   // Сложность бота: три кнопки-ступеньки, видны только создателю.
@@ -410,16 +435,16 @@ function renderRoom() {
     <div class="panel pad"><h3>Код комнаты</h3><span class="bigcode">${esc(s.code)}</span>
       <h3>Пригласить друзей</h3>
       <div class="linkrow"><input readonly value="${esc(link)}" aria-label="Ссылка на игру"><button class="btn" data-copy="${esc(link)}">Копировать</button></div>
-      <p class="hint">До ${maxP} игроков; пустые места можно отдать ботам.${nomad ? " Цвета фигурок раздаются по порядку хода." : ""}</p>
+      <p class="hint">До ${maxP} игроков; пустые места можно отдать ботам.${nomad || mukhtar ? " Цвета фигурок раздаются по порядку хода." : ""}${mukhtar ? " Интереснее всего вчетвером и больше." : ""}</p>
       <h3>Игра</h3>
-      <div class="maps two">${kinds}</div>
-      ${nomad ? `<h3>Цель</h3><div class="topts">${targets}</div>` : `<h3>Размер карты</h3>
+      <div class="maps three">${kinds}</div>
+      ${mukhtar ? `<h3>Фора волков</h3><div class="topts">${heads}</div>` : nomad ? `<h3>Цель</h3><div class="topts">${targets}</div>` : `<h3>Размер карты</h3>
       <div class="maps">${maps}</div>`}
       <h3>Таймер хода</h3>
       <div class="topts">${timers}</div>
       <h3>Дополнения</h3>
       <div class="mods">${mods}</div>${helperList}
-      ${nomad ? `<p class="hint">${host ? "" : "Игру, цель, таймер и дополнения выбирает создатель комнаты. "}Время хода вышло — тайл за игрока положит бот. Дополнения можно сочетать.</p>` : `<p class="hint">${host ? "" : "Карту, таймер и дополнения выбирает создатель комнаты. "}Кубики бросаются сами через ${TIMER.roll} с. С таймером на сброс карт даётся ${TIMER.discard} с, каждое действие в ход добавляет ${TIMER.bonus} с. Время вышло — ход доигрывается автоматически.</p>`}
+      ${mukhtar ? `<p class="hint">${host ? "" : "Игру, фору, таймер и дополнения выбирает создатель комнаты. "}Фора — на сколько клеток волки опережают Мухтара на старте. Время хода вышло — карту за игрока сыграет бот.</p>` : nomad ? `<p class="hint">${host ? "" : "Игру, цель, таймер и дополнения выбирает создатель комнаты. "}Время хода вышло — тайл за игрока положит бот. Дополнения можно сочетать.</p>` : `<p class="hint">${host ? "" : "Карту, таймер и дополнения выбирает создатель комнаты. "}Кубики бросаются сами через ${TIMER.roll} с. С таймером на сброс карт даётся ${TIMER.discard} с, каждое действие в ход добавляет ${TIMER.bonus} с. Время вышло — ход доигрывается автоматически.</p>`}
       ${tooMany ? `<p class="warn">${cfg.name} карта рассчитана максимум на ${cfg.maxPlayers} игроков — выберите карту побольше или уберите лишних.</p>` : ""}
       ${me < 0 ? `<button class="btn green big" data-a="join" ${s.players.length >= maxP || !myName ? "disabled" : ""}>Сесть за стол</button>` : ""}
       ${me < 0 && !myName ? `<p class="hint">Чтобы сесть за стол, укажите имя слева.</p>` : ""}
@@ -612,6 +637,7 @@ function phaseHint(s, me) {
 
 function renderGame() {
   if (game.game === "nomad") return renderNomad();
+  if (game.game === "mukhtar") return renderMukhtar();
   document.body.classList.add("ingame");
   const s = game, me = myIndex(), P = s.players[me], live = s.status === "play" && !s.paused, mine = me >= 0 && me === s.cur && live;
   const cur = s.players[s.cur];
@@ -1029,6 +1055,7 @@ document.addEventListener("click", async (ev) => {
   if (d.gk) { ui.gk = d.gk; store.set("zh.gk", d.gk); return render(); }
   if (d.setgame) return act({ type: "setGame", game: d.setgame });
   if (d.target !== undefined) return act({ type: "setTarget", target: +d.target });
+  if (d.mhead !== undefined) return act({ type: "setHead", head: +d.mhead });
   if (d.a === "create") { if (game || ensureName()) send({ t: "create", game: ui.gk }); return; }
   if (d.a === "quick") {
     if (!ensureName()) return;

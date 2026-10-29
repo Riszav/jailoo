@@ -6,6 +6,7 @@ const { promisify } = require("util");
 const { WebSocketServer } = require("ws");
 const L = require("./shared/logic.js");
 const N = require("./shared/nomad.js");
+const M = require("./shared/mukhtar.js");
 const db = require("./db.js");
 
 const PORT = Number(process.env.PORT) || 3000;
@@ -26,14 +27,16 @@ const STATIC = {
   "/logic.js": ["shared/logic.js", "text/javascript; charset=utf-8"],
   "/nomad.js": ["shared/nomad.js", "text/javascript; charset=utf-8"],
   "/nomad-client.js": ["public/nomad-client.js", "text/javascript; charset=utf-8"],
+  "/mukhtar.js": ["shared/mukhtar.js", "text/javascript; charset=utf-8"],
+  "/mukhtar-client.js": ["public/mukhtar-client.js", "text/javascript; charset=utf-8"],
   "/favicon.svg": ["public/favicon.svg", "image/svg+xml"],
 };
 // Версия клиента — хеш статики на момент запуска. Вкладка, открытая до обновления, увидит другую версию и перезагрузится.
 const BUILD = crypto.createHash("sha256").update(Object.values(STATIC).map(([f]) => fs.readFileSync(path.join(__dirname, f))).join("\0")).digest("hex").slice(0, 12);
 
-// У каждой игры свой модуль правил: «Жайлоо» (кубики) или «Кочёвка» (тайлы).
-const GAMES = { zhailoo: L, nomad: N };
-const R = (g) => (g && g.game === "nomad" ? N : L);
+// У каждой игры свой модуль правил: «Жайлоо» (кубики), «Кочёвка» (тайлы) или «Мухтар» (погоня).
+const GAMES = { zhailoo: L, nomad: N, mukhtar: M };
+const R = (g) => (g && GAMES[g.game]) || L;
 
 const games = new Map();
 const clients = new Set();
@@ -88,6 +91,7 @@ const cleanName = (n) => String(n || "").replace(/[\u0000-\u001f]/g, "").trim().
 function viewFor(game, viewerId) {
   if (game.status !== "play") return game;
   if (game.game === "nomad") return nomadView(game);
+  if (game.game === "mukhtar") return mukhtarView(game, viewerId);
   const v = structuredClone(game);
   const me = v.players.findIndex((p) => p.id === viewerId);
   for (const k in v.steals) if (me !== v.steals[k].t && me !== v.steals[k].v) delete v.steals[k].r;
@@ -121,6 +125,31 @@ function nomadView(game) {
   delete v.deadline;
   delete v.pausedLeft;
   delete v.timerKey;
+  return v;
+}
+
+// В «Мухтаре» скрыты колода, чужие карты, чужой шёпот и цель, вместимость пещер, пока их не открыли. Что пещера полна — видно всем.
+function mukhtarView(game, viewerId) {
+  const v = structuredClone(game);
+  v.timeLeft = game.paused ? game.pausedLeft ?? null : game.deadline ? Math.max(0, game.deadline - Date.now()) : null;
+  delete v.deadline;
+  delete v.pausedLeft;
+  delete v.timerKey;
+  v.deckCount = v.deck.length;
+  v.deck = [];
+  for (const c of v.caves) {
+    c.full = M.full(c);
+    if (!c.open && !c.full) c.cap = null;
+  }
+  for (const p of v.players) {
+    p.handCount = p.hand.length;
+    p.whispered = p.whisper ? p.whisper.c : null;
+    if (p.id !== viewerId && p.was !== viewerId) {
+      p.hand = [];
+      p.whisper = null;
+      p.aim = null;
+    }
+  }
   return v;
 }
 
@@ -321,7 +350,8 @@ function switchGame(g, actor, kind) {
   const n = M.newGame(g.code, g.host);
   n.game = kind;
   n.players = g.players.map((p) => Object.assign(M.newPlayer(p.id, p.bot, p.name), p.level ? { level: p.level } : {}));
-  return Object.assign(n, { createdAt: g.createdAt, names: g.names, seq: g.seq, turnTime: g.turnTime });
+  // Таймер переезжает, только если такой есть и в новой игре.
+  return Object.assign(n, { createdAt: g.createdAt, names: g.names, seq: g.seq }, M.TURN_TIMES.includes(g.turnTime) ? { turnTime: g.turnTime } : {});
 }
 
 // --- аккаунты ---
@@ -457,6 +487,8 @@ function botTick() {
     if (g.status !== "play" || g.paused) continue;
     const rules = R(g), bot = rules.botPending(g) >= 0;
     if (!bot && !(g.deadline && now > g.deadline)) continue;
+    // Бот ждёт, пока у людей доиграет анимация прошлого хода.
+    if (bot && rules.botWait && now - (g.updatedAt || 0) < rules.botWait(g)) continue;
     let next;
     try {
       next = bot ? rules.botStep(g) : rules.timeoutStep(g);

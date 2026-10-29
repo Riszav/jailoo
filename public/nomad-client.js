@@ -229,7 +229,7 @@ function nPlayerRows(s, me) {
     const left = NM.supplyLeft(s, i), pct = Math.min(100, Math.round((p.score / (target || lead)) * 100));
     const toGo = target ? Math.max(0, target - p.score) : null;
     return `<div class="pl npl ${i === s.cur && s.status === "play" ? "cur" : ""}" style="--pc:${p.color}">${ava(nameOf(s, i), p.color)}
-      <div style="min-width:0"><div class="nm"><span>${esc(nameOf(s, i))}</span>${i === me ? '<span class="badge">вы</span>' : ""}${p.bot ? `<span class="badge" title="Бот — сложность: ${LEVEL_RU[p.level || "medium"]}">бот · ${LEVEL_RU[p.level || "medium"]}</span>` : ""}</div>
+      <div style="min-width:0"><div class="nm"><span>${esc(nameOf(s, i))}</span>${i === me ? '<span class="badge">вы</span>' : ""}${offTag(s, i)}${p.bot ? `<span class="badge" title="Бот — сложность: ${LEVEL_RU[p.level || "medium"]}">бот · ${LEVEL_RU[p.level || "medium"]}</span>` : ""}</div>
         <div class="nbar" title="${target ? `${p.score} из ${target} очков` : `${p.score} очков — полоса относительно лидера`}"><i style="width:${pct}%"></i></div>
         <div class="pstats"><span title="Свободные чабаны — ${left} из ${NM.SUPPLY}">${nFigIcon(p.color)}${left}</span>${mod(s, "berkut") ? `<span class="${NM.berkutLeft(s, i) ? "" : "used"}" title="Беркутчи — ${NM.berkutLeft(s, i) ? "дома, можно поставить" : "уже на поле"}">${nFigIcon(p.color, { big: true })}</span>` : ""}${toGo != null ? `<span class="${toGo <= 15 ? "hl" : ""}" title="Сколько осталось до цели">до цели ${toGo}</span>` : ""}</div></div>
       <span class="vp ${got ? "bump" : ""}" title="Очки" ${got ? fxDelay(scoreFx) : ""}>${p.score}<small>очк.</small>${got ? `<b class="vplus" ${fxDelay(scoreFx)}>+${got}</b>` : ""}</span></div>`;
@@ -429,7 +429,7 @@ function nSummaryHTML(s, me) {
     ${my ? `<p class="myrate">Ваш рейтинг: <b>${my.before + my.delta}</b> <b class="${my.delta >= 0 ? "up" : "down"}">${my.delta >= 0 ? "+" : ""}${my.delta}</b></p>` : me >= 0 && !account ? `<p class="hint">Партия не попала в рейтинг: <button class="link" data-a="authopen">войдите или зарегистрируйтесь</button>, чтобы следующие считались.</p>` : ""}
     ${table}
     ${awards ? `<div class="awards">${awards}</div>` : ""}
-    <div class="row"><button class="btn green" data-a="back">К списку партий</button><button class="btn" data-a="hidesummary">Посмотреть поле</button></div>
+    <div class="row"><button class="btn green" data-a="back">К списку партий</button>${rematchBtn(s)}<button class="btn" data-a="hidesummary">Посмотреть поле</button></div>
   </div></div>`;
 }
 

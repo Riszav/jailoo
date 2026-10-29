@@ -7,6 +7,8 @@ const { WebSocketServer } = require("ws");
 const L = require("./shared/logic.js");
 const N = require("./shared/nomad.js");
 const M = require("./shared/mukhtar.js");
+const B = require("./shared/bunker.js");
+const F = require("./shared/mafia.js");
 const db = require("./db.js");
 
 const PORT = Number(process.env.PORT) || 3000;
@@ -29,13 +31,25 @@ const STATIC = {
   "/nomad-client.js": ["public/nomad-client.js", "text/javascript; charset=utf-8"],
   "/mukhtar.js": ["shared/mukhtar.js", "text/javascript; charset=utf-8"],
   "/mukhtar-client.js": ["public/mukhtar-client.js", "text/javascript; charset=utf-8"],
+  "/bunker.js": ["shared/bunker.js", "text/javascript; charset=utf-8"],
+  "/bunker-client.js": ["public/bunker-client.js", "text/javascript; charset=utf-8"],
+  "/mafia.js": ["shared/mafia.js", "text/javascript; charset=utf-8"],
+  "/mafia-client.js": ["public/mafia-client.js", "text/javascript; charset=utf-8"],
   "/favicon.svg": ["public/favicon.svg", "image/svg+xml"],
 };
 // Версия клиента — хеш статики на момент запуска. Вкладка, открытая до обновления, увидит другую версию и перезагрузится.
 const BUILD = crypto.createHash("sha256").update(Object.values(STATIC).map(([f]) => fs.readFileSync(path.join(__dirname, f))).join("\0")).digest("hex").slice(0, 12);
 
-// У каждой игры свой модуль правил: «Жайлоо» (кубики), «Кочёвка» (тайлы) или «Мухтар» (погоня).
-const GAMES = { zhailoo: L, nomad: N, mukhtar: M };
+// У каждой игры свой модуль правил: «Жайлоо» (кубики), «Кочёвка» (тайлы), «Мухтар» (погоня) или «Бункер» (спор и голосование).
+const GAMES = { zhailoo: L, nomad: N, mukhtar: M, bunker: B, mafia: F };
+const CHAT_MAX = 150, CHAT_LEN = 300, CHAT_GAP_MS = 700;
+// Игрок, у которого нет открытой вкладки с партией дольше этого, заменяется ботом — если в партии остался кто-то из людей.
+// Вернётся — место отдаётся ему само.
+const OFFLINE_MS = Number(process.env.OFFLINE_MS) || 60 * 1000;
+const EMOTES = ["👍", "😂", "😮", "😡", "😭", "🔥", "👏", "🤔", "🙏", "💀", "Кой!", "Жакшы!", "Ой-бой!", "Рахмат!", "Реванш?", "Быстрее!"];
+const EMOTE_GAP_MS = 1200;
+// Настройки комнаты, которые переезжают в реванш.
+const KEEP_SETTINGS = ["turnTime", "mods", "mapSize", "target", "head", "talk"];
 const R = (g) => (g && GAMES[g.game]) || L;
 
 const games = new Map();
@@ -92,6 +106,8 @@ function viewFor(game, viewerId) {
   if (game.status !== "play") return game;
   if (game.game === "nomad") return nomadView(game);
   if (game.game === "mukhtar") return mukhtarView(game, viewerId);
+  if (game.game === "bunker") return withTimer(B.view(game, viewerId), game);
+  if (game.game === "mafia") return withTimer(F.view(game, viewerId), game);
   const v = structuredClone(game);
   const me = v.players.findIndex((p) => p.id === viewerId);
   for (const k in v.steals) if (me !== v.steals[k].t && me !== v.steals[k].v) delete v.steals[k].r;
@@ -117,6 +133,130 @@ function viewFor(game, viewerId) {
   }
   return v;
 }
+
+function withTimer(v, game) {
+  v.timeLeft = game.paused ? game.pausedLeft ?? null : game.deadline ? Math.max(0, game.deadline - Date.now()) : null;
+  delete v.deadline;
+  delete v.pausedLeft;
+  delete v.timerKey;
+  return v;
+}
+
+// Чат лежит в партии, но приходит отдельными сообщениями, а не с каждым состоянием.
+function stateFor(g, viewerId) {
+  const { chat, ...v } = viewFor(g, viewerId);
+  // Кто сейчас смотрит партию: у бота, занявшего чужое место, — его хозяин.
+  const here = watching(g.code);
+  v.online = g.players.map((p) => (p.bot ? !!p.was && here.has(p.was) : here.has(p.id)));
+  return v;
+}
+function watching(code) {
+  const set = new Set();
+  for (const c of clients) if (c.code === code && c.playerId) set.add(c.playerId);
+  return set;
+}
+// Когда кто-то открыл или закрыл партию, остальные видят, кто в сети; ушедшим запоминаем, с какого момента их нет.
+const awaySince = new Map();
+function presence(code) {
+  const g = code && games.get(code);
+  if (!g) return;
+  const here = watching(code), now = Date.now();
+  for (const p of g.players) {
+    if (p.bot) continue;
+    const key = `${code}:${p.id}`;
+    if (here.has(p.id)) awaySince.delete(key);
+    else if (!awaySince.has(key)) awaySince.set(key, now);
+  }
+  broadcastGame(code);
+}
+// Отключившихся дольше OFFLINE_MS заменяем ботом. Если людей в сети не осталось вовсе, ждём: ходы и так доиграет таймер.
+function replaceOffline() {
+  const now = Date.now();
+  for (const g of [...games.values()]) {
+    if (g.status !== "play" || g.paused) continue;
+    const here = watching(g.code);
+    if (!g.players.some((p) => !p.bot && here.has(p.id))) continue;
+    for (const p of g.players) {
+      if (p.bot || here.has(p.id)) continue;
+      const since = awaySince.get(`${g.code}:${p.id}`);
+      if (since == null) { awaySince.set(`${g.code}:${p.id}`, now); continue; }
+      if (now - since < OFFLINE_MS) continue;
+      const cur = games.get(g.code), pi = cur.players.findIndex((q) => q.id === p.id);
+      let next;
+      try {
+        next = R(cur).apply(cur, p.id, { type: "abandon" });
+      } catch (e) {
+        console.error(`Не удалось заменить ботом игрока в ${g.code}:`, e.message);
+        continue;
+      }
+      if (!next) continue;
+      next.players[pi].auto = true;
+      next.log[next.log.length - 1] = `@${pi} не в сети — пока за него играет бот`;
+      next.seq = (cur.seq || 0) + 1;
+      awaySince.delete(`${g.code}:${p.id}`);
+      games.set(g.code, next);
+      changed(g.code);
+    }
+  }
+}
+// Игрок, которого заменили автоматически, вернулся в партию — отдаём ему место.
+function autoReclaim(g, pid) {
+  if (g.status !== "play" || !g.players.some((p) => p.bot && p.was === pid && p.auto)) return;
+  try {
+    const next = R(g).apply(g, pid, { type: "reclaim" });
+    for (const p of next.players) if (p.id === pid) delete p.auto;
+    next.seq = (g.seq || 0) + 1;
+    games.set(g.code, next);
+    changed(g.code);
+  } catch (e) {
+    console.error(`Не удалось вернуть место в ${g.code}:`, e.message);
+  }
+}
+
+// Реванш: новая комната той же игры с теми же настройками и ботами. Первый нажавший создаёт её, остальные присоединяются.
+function rematch(ws) {
+  const g = games.get(ws.code);
+  if (!g || !ws.playerId) return send(ws, { t: "error", message: "Игра не открыта" });
+  if (g.status !== "over") return send(ws, { t: "error", message: "Реванш — после конца партии" });
+  if (seatOf(g, ws.playerId) < 0) return send(ws, { t: "error", message: "Реванш могут начать только игроки" });
+  let n = g.rematch && games.get(g.rematch);
+  if (n && n.status === "lobby") {
+    if (!n.players.some((p) => p.id === ws.playerId)) {
+      try {
+        n = R(n).apply(n, ws.playerId, { type: "join" });
+      } catch (e) {
+        return send(ws, { t: "error", message: e.message });
+      }
+      games.set(n.code, n);
+    }
+  } else {
+    const M = R(g);
+    n = M.newGame(genCode(), ws.playerId);
+    n.game = g.game || "zhailoo";
+    for (const k of KEEP_SETTINGS) if (g[k] !== undefined) n[k] = structuredClone(g[k]);
+    for (const p of g.players) {
+      if (!p.bot || p.was) continue;
+      try {
+        n = M.apply(n, ws.playerId, { type: "addBot", level: p.level });
+      } catch {}
+    }
+    n.names = {};
+    games.set(n.code, n);
+    g.rematch = n.code;
+    g.rematchBy = seatOf(g, ws.playerId);
+    changed(g.code);
+  }
+  rememberName(n, ws);
+  changed(n.code);
+  send(ws, { t: "goto", code: n.code });
+}
+const seatOf = (g, pid) => g.players.findIndex((p) => p.id === pid || p.was === pid);
+// Каналы чата: у большинства игр один общий, в «Мафии» есть закрытый чат мафии и чат мёртвых.
+const chatChannels = (g, pi) => R(g).chatChannels?.(g, pi) || [{ id: "all", name: "Общий" }];
+const chatFor = (g, pid) => {
+  const pi = seatOf(g, pid), sees = R(g).chatSees;
+  return (g.chat || []).filter((m) => !sees || sees(g, pi, m));
+};
 
 // В «Кочёвке» скрыт только порядок тайлов в мешке.
 function nomadView(game) {
@@ -173,7 +313,7 @@ function broadcastGame(code) {
   const g = games.get(code);
   for (const c of clients) {
     if (c.code !== code) continue;
-    if (g) send(c, { t: "state", game: viewFor(g, c.playerId) });
+    if (g) send(c, { t: "state", game: stateFor(g, c.playerId) });
     else send(c, { t: "closed", code });
   }
 }
@@ -219,6 +359,14 @@ function changed(code, bonus) {
   }
   if (g && g.status === "over" && !g.rated) rate(g);
   broadcastGame(code);
+  // Кто какие каналы чата видит, меняется со смертью игрока и в конце партии — тогда рассылаем историю заново.
+  if (g && R(g).chatSees) {
+    const sig = `${g.status}:${(g.deaths || []).length}`;
+    if (g.chatSig !== sig) {
+      g.chatSig = sig;
+      for (const c of clients) if (c.code === code) send(c, { t: "chat", code, list: chatFor(g, c.playerId) });
+    }
+  }
   broadcastLobby();
   save(code);
 }
@@ -286,15 +434,53 @@ function handle(ws, msg) {
     case "open": {
       const code = String(msg.code || "").toUpperCase();
       if (!games.has(code)) return send(ws, { t: "error", message: `Игра ${code} не найдена` });
+      const was = ws.code;
       ws.code = code;
       const g = games.get(code);
       rememberName(g, ws);
+      if (was && was !== code) presence(was);
       send(ws, { t: "opened", code });
-      send(ws, { t: "state", game: viewFor(g, ws.playerId) });
+      send(ws, { t: "state", game: stateFor(g, ws.playerId) });
+      send(ws, { t: "chat", code, list: chatFor(g, ws.playerId) });
+      presence(code);
+      autoReclaim(games.get(code), ws.playerId);
+      return;
+    }
+    case "emote": {
+      const g = games.get(ws.code);
+      if (!g || !ws.playerId) return;
+      if (!EMOTES.includes(msg.e)) return send(ws, { t: "error", message: "Неизвестная эмоция" });
+      const pi = seatOf(g, ws.playerId), now = Date.now();
+      if (pi < 0) return send(ws, { t: "error", message: "Эмоции — только для игроков за столом" });
+      if (now - (ws.emoteAt || 0) < EMOTE_GAP_MS) return;
+      ws.emoteAt = now;
+      for (const c of clients) if (c.code === g.code) send(c, { t: "emote", code: g.code, i: pi, e: msg.e });
+      return;
+    }
+    case "rematch":
+      return rematch(ws);
+    case "chat": {
+      const g = games.get(ws.code);
+      if (!g || !ws.playerId) return send(ws, { t: "error", message: "Игра не открыта" });
+      const text = String(msg.text || "").replace(/[\u0000-\u001f]/g, " ").trim().slice(0, CHAT_LEN);
+      if (!text) return;
+      const now = Date.now();
+      if (now - (ws.chatAt || 0) < CHAT_GAP_MS) return send(ws, { t: "error", message: "Не так быстро" });
+      const pi = seatOf(g, ws.playerId), ch = typeof msg.ch === "string" ? msg.ch : "all";
+      const why = pi < 0 ? "Писать в чат могут только игроки за столом" : !chatChannels(g, pi).some((c) => c.id === ch) ? "В этот чат вам писать нельзя" : R(g).chatCheck?.(g, pi, ch);
+      if (why) return send(ws, { t: "error", message: why });
+      ws.chatAt = now;
+      const m = { n: (g.chatNo = (g.chatNo || 0) + 1), i: pi, name: g.names?.[ws.playerId] || ws.name || `Игрок ${pi + 1}`, text, at: now, ch };
+      g.chat = [...(g.chat || []), m].slice(-CHAT_MAX);
+      const sees = R(g).chatSees;
+      for (const c of clients) if (c.code === g.code && (!sees || sees(g, seatOf(g, c.playerId), m))) send(c, { t: "chat", code: g.code, m });
+      save(g.code);
       return;
     }
     case "close": {
+      const was = ws.code;
       ws.code = null;
+      presence(was);
       return;
     }
     case "delete": {
@@ -351,7 +537,7 @@ function switchGame(g, actor, kind) {
   n.game = kind;
   n.players = g.players.map((p) => Object.assign(M.newPlayer(p.id, p.bot, p.name), p.level ? { level: p.level } : {}));
   // Таймер переезжает, только если такой есть и в новой игре.
-  return Object.assign(n, { createdAt: g.createdAt, names: g.names, seq: g.seq }, M.TURN_TIMES.includes(g.turnTime) ? { turnTime: g.turnTime } : {});
+  return Object.assign(n, { createdAt: g.createdAt, names: g.names, seq: g.seq, chat: g.chat, chatNo: g.chatNo }, M.TURN_TIMES.includes(g.turnTime) ? { turnTime: g.turnTime } : {});
 }
 
 // --- аккаунты ---
@@ -548,7 +734,10 @@ wss.on("connection", (ws) => {
     }
     handle(ws, msg);
   });
-  ws.on("close", () => clients.delete(ws));
+  ws.on("close", () => {
+    clients.delete(ws);
+    presence(ws.code);
+  });
 });
 
 setInterval(() => {
@@ -566,6 +755,7 @@ load()
   .then(() => {
     if (MASTER_PASSWORD) console.warn("Внимание: включён общий пароль для входа в любой аккаунт (MASTER_PASSWORD)");
     setInterval(botTick, BOT_TICK_MS);
+    setInterval(replaceOffline, 5000);
     setInterval(cleanup, 10 * 60 * 1000);
     server.listen(PORT, () => console.log(`Жайлоо: http://localhost:${PORT}`));
   })

@@ -372,7 +372,7 @@ function mPlayerRows(s, me) {
     const cards = p.role !== "cave" ? `<span title="Карт в руке">${ICON("cards")}${p.handCount ?? p.hand.length}</span>` : "";
     const wh = p.whispered != null ? `<span class="mwh" title="Шептался у пещеры «${esc(s.caves[p.whispered].name)}»">🤫 ${esc(s.caves[p.whispered].name)}</span>` : "";
     return `<div class="pl mpl ${ui.mpl === i ? "open" : ""} ${i === s.cur && s.status === "play" ? "cur" : ""} ${p.role}" style="--pc:${p.color}" data-mpl="${i}">${ava(nameOf(s, i), p.color)}
-      <div style="min-width:0"><div class="nm"><span>${esc(nameOf(s, i))}</span>${i === me ? '<span class="badge">вы</span>' : ""}${p.bot ? `<span class="badge" title="Бот — сложность: ${LEVEL_RU[p.level || "medium"]}">бот</span>` : ""}</div>
+      <div style="min-width:0"><div class="nm"><span>${esc(nameOf(s, i))}</span>${i === me ? '<span class="badge">вы</span>' : ""}${offTag(s, i)}${p.bot ? `<span class="badge" title="Бот — сложность: ${LEVEL_RU[p.level || "medium"]}">бот</span>` : ""}</div>
         <div class="pstats">${role}${lambs}${cards}${wh}</div>
         ${mPlayedStrip(s, p)}</div>
       <span class="vp" title="Очки${p.role !== "dog" ? " — волк получит их, только если его пещеру заполнят" : ""}">${p.score}<small>очк.</small></span>
@@ -530,7 +530,7 @@ function mSummaryHTML(s, me) {
     ${my ? `<p class="myrate">Ваш рейтинг: <b>${my.before + my.delta}</b> <b class="${my.delta >= 0 ? "up" : "down"}">${my.delta >= 0 ? "+" : ""}${my.delta}</b></p>` : me >= 0 && !account ? `<p class="hint">Партия не попала в рейтинг: <button class="link" data-a="authopen">войдите или зарегистрируйтесь</button>, чтобы следующие считались.</p>` : ""}
     ${table}
     <p class="hint">Пещеры: ${caves}.${whispers ? ` Шёпоты: ${whispers}.` : ""}</p>
-    <div class="row"><button class="btn green" data-a="back">К списку партий</button><button class="btn" data-a="hidesummary">Посмотреть поле</button></div>
+    <div class="row"><button class="btn green" data-a="back">К списку партий</button>${rematchBtn(s)}<button class="btn" data-a="hidesummary">Посмотреть поле</button></div>
   </div></div>`;
 }
 

@@ -780,3 +780,147 @@ svg.mboard{width:100%;height:100%;display:block;filter:drop-shadow(0 10px 18px r
   .gpick{grid-template-columns:minmax(0,1fr)}
 }
 @media (prefers-reduced-motion:reduce){.mboom{display:none}}
+
+/* «Бункер»: тёмный бетонный стол, катастрофа и бункер сверху, карточки игроков, рука персонажа и чат */
+.gpick{grid-template-columns:repeat(2,minmax(0,1fr));max-width:600px}
+.gart.bart .ic{width:34px;height:34px;color:var(--gold)}
+.badge.red{background:var(--red);color:#fff}
+.badge.green{background:var(--green);color:#fff}
+body.ingame.bunker{background:radial-gradient(ellipse at 45% 30%,#4b525c 0%,#2f343c 55%,#1c1f25 100%) fixed #2f343c}
+.bgame .boardbox.bbox{top:92px;overflow:auto;display:flex;flex-direction:column;gap:12px;padding:0 2px 12px;border-radius:0}
+.bscen{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:16px;padding:14px 16px}
+.blbl{display:block;font-size:11px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
+.bcat b{display:block;font-size:20px;font-weight:900;color:var(--red);margin:2px 0}
+.bcat>span:last-child{font-size:14px}
+.bseats{display:block;font-size:14px;margin:2px 0 4px}
+.bseats b{font-size:20px;font-weight:900;color:var(--strong)}
+.bbunker ul{margin:0;padding-left:18px;font-size:13px;color:var(--log)}
+.border{display:flex;gap:6px;align-items:center;flex-wrap:wrap;padding:6px 10px;background:rgba(0,0,0,.25);border-radius:999px;align-self:flex-start}
+.border>span{display:inline-flex;border-radius:50%;transition:transform .2s}
+.border>span.done{opacity:.4}
+.border>span.now{transform:scale(1.25);box-shadow:0 0 0 3px var(--gold);border-radius:50%}
+.btiles{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:10px}
+.btile{padding:10px 12px;display:flex;flex-direction:column;gap:8px;border-top:5px solid var(--pc)}
+.btile.cur{box-shadow:var(--shadow),0 0 0 3px var(--gold)}
+.btile.target{box-shadow:var(--shadow),0 0 0 3px var(--red)}
+.btile.out{opacity:.72;filter:grayscale(.5)}
+.bth{display:flex;gap:10px;align-items:center;min-width:0}
+.bt-n{display:flex;flex-direction:column;min-width:0}
+.bt-n>b{font-size:16px;font-weight:900;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.bt-n>span{display:flex;gap:4px;flex-wrap:wrap}
+.btraits{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:2px;font-size:13px}
+.btraits li{display:grid;grid-template-columns:92px minmax(0,1fr);gap:6px;padding:2px 0;border-bottom:1px dashed var(--line)}
+.btraits li:last-child{border-bottom:none}
+.btraits li span{color:var(--muted);font-size:12px}
+.btraits li b{font-weight:800}
+.btraits li.cl b{color:var(--muted);font-weight:700;font-style:italic;opacity:.6}
+.btraits li.mine b{color:var(--muted)}
+.btraits li.op b{color:var(--ink)}
+.bvoted{font-size:13px;font-weight:900;color:var(--red)}
+.bhand{display:flex;gap:8px;padding:10px;overflow-x:auto;max-width:100%;flex:1 1 0;min-width:0}
+.bcard{flex:0 0 120px;min-height:96px;display:flex;flex-direction:column;gap:3px;text-align:left;font:inherit;border:2px dashed var(--line);border-radius:12px;background:var(--surface);color:var(--ink);padding:8px 10px;cursor:pointer}
+.bcard b{font-size:14px;font-weight:900;line-height:1.15;flex:1}
+.bcard small{font-size:11px;font-weight:800;color:var(--muted)}
+.bcard.open{border-style:solid;border-color:var(--green);background:var(--on-bg)}
+.bcard.open small{color:var(--green-sh)}
+.bcard.can{border-color:var(--gold);box-shadow:0 0 0 2px rgba(242,181,58,.35)}
+.bcard:not(:disabled):hover{border-color:var(--blue);transform:translateY(-3px)}
+.bcard.sel{border:2px solid var(--gold);box-shadow:0 0 0 3px var(--gold);transform:translateY(-4px)}
+.bcard:disabled{cursor:default}
+.bcard:focus-visible{outline:3px solid var(--gold);outline-offset:2px}
+.ab.wide{width:auto;min-width:110px;padding:0 14px}
+.ab.wide .lb{font-size:13px}
+.chatp{flex:1;min-height:220px;display:flex;flex-direction:column}
+.chatbox{flex:1;overflow:auto;padding:2px 14px 8px;display:flex;flex-direction:column;gap:6px;font-size:14px}
+.cm{display:flex;flex-direction:column;gap:1px;padding:6px 10px;border-radius:10px;background:var(--panel2);align-self:flex-start;max-width:92%;word-break:break-word}
+.cm b{font-size:12px;font-weight:900}
+.cm.own{align-self:flex-end;background:var(--sel-bg)}
+.cm-empty{font-size:13px;margin:6px 0}
+.chatin{display:flex;gap:6px;padding:8px 10px;border-top:1px solid var(--line)}
+.chatin input{flex:1;min-height:36px}
+.cm-ro{margin:0;padding:8px 14px}
+.blogp{flex:0 0 200px;min-height:120px}
+.roomgrid .chatp{margin-top:14px;min-height:240px;max-height:360px;box-shadow:inset 0 0 0 2px var(--line)}
+.binside{display:flex;flex-wrap:wrap;gap:12px}
+.binside .who2 b{margin-left:4px}
+.bdoor .ic{width:44px;height:44px}
+@media (max-width:960px){
+  .bgame .boardbox.bbox{top:auto;overflow:visible}
+  .bscen{grid-template-columns:minmax(0,1fr)}
+  .chatp{min-height:300px}
+  .blogp{flex:none}
+}
+@media (max-width:640px){
+  .btiles{grid-template-columns:minmax(0,1fr)}
+  /* На телефоне у чужих карточек только открытые карты, чтобы чат не уезжал далеко вниз. */
+  .btraits li.cl{display:none}
+  .chatbox{max-height:50vh}
+  .gpick{grid-template-columns:minmax(0,1fr)}
+  .bcard{flex-basis:104px}
+}
+
+/* угловая панель: звук, эмоции, чат в партии; всплывающие эмоции; отметка «не в сети» */
+.badge.off{background:#6b7280;color:#fff}
+.badge.off::before{content:"";display:inline-block;width:6px;height:6px;border-radius:50%;background:#d1d5db;margin-right:4px;vertical-align:1px}
+.dock{position:fixed;right:max(20px,env(safe-area-inset-right,0px));bottom:calc(20px + env(safe-area-inset-bottom,0px));z-index:16;display:flex;flex-direction:column;align-items:flex-end;gap:8px;pointer-events:none}
+/* Кнопки панели стоят поверх низа журнала — оставляем под ними место. */
+body.ingame .logp .log{padding-bottom:60px}
+.dock>*{pointer-events:auto}
+.dock[hidden]{display:none}
+.dock-btns{display:flex;gap:6px}
+.dbtn{position:relative;width:44px;height:44px;border:none;border-radius:50%;background:var(--panel);box-shadow:var(--shadow);font-size:20px;cursor:pointer;display:grid;place-items:center}
+.dbtn.on{box-shadow:var(--shadow),0 0 0 3px var(--gold)}
+.dbtn:focus-visible{outline:3px solid var(--gold);outline-offset:2px}
+.dnum{position:absolute;top:-4px;right:-4px;min-width:20px;height:20px;padding:0 5px;border-radius:999px;background:var(--red);color:#fff;font-size:11px;font-weight:900;display:grid;place-items:center}
+.dock-chat{width:min(360px,calc(100vw - 24px));height:min(460px,60vh);display:flex}
+.dock-chat .chatp{flex:1;min-height:0;box-shadow:var(--shadow)}
+.emopick{display:grid;grid-template-columns:repeat(5,auto);gap:4px;padding:8px;max-width:calc(100vw - 24px)}
+.emopick button{border:none;background:var(--panel2);border-radius:10px;min-width:44px;height:40px;padding:0 8px;font:inherit;font-size:20px;font-weight:900;color:var(--ink);cursor:pointer}
+.emopick button:not(:first-child):nth-child(n+11){font-size:13px}
+.emopick button:hover:not(:disabled){background:var(--on-bg)}
+.emopick .hint{grid-column:1/-1;margin:2px 0 0}
+.emotes{position:fixed;inset:0;pointer-events:none;z-index:17;overflow:hidden}
+.emote{position:absolute;bottom:90px;display:flex;flex-direction:column;align-items:center;gap:2px;animation:emote 3.2s ease-out forwards}
+.emote b{font-size:44px;line-height:1;filter:drop-shadow(0 3px 4px rgba(0,0,0,.35))}
+.emote.word b{font-size:20px;font-weight:900;background:var(--gold);color:#3a2a06;padding:6px 14px;border-radius:999px;box-shadow:var(--shadow)}
+.emote span{font-size:12px;font-weight:900;color:#fff;background:var(--pc);padding:1px 8px;border-radius:999px;box-shadow:0 2px 4px rgba(0,0,0,.3)}
+@keyframes emote{0%{opacity:0;transform:translateY(20px) scale(.5)}12%{opacity:1;transform:translateY(0) scale(1.15)}22%{transform:scale(1)}80%{opacity:1}100%{opacity:0;transform:translateY(-220px)}}
+@media (prefers-reduced-motion:reduce){.emote{animation:none;opacity:1}}
+
+/* «Мафия»: та же раскладка, что в «Бункере»; ночью стол темнеет. Роли: мафия — красная, город — синий */
+.gart.fart{font-size:34px;line-height:1}
+body.ingame.bunker.fnight{background:radial-gradient(ellipse at 45% 25%,#26304a 0%,#151a2b 55%,#0a0d17 100%) fixed #151a2b}
+body.fnight .ftile:not(.out){box-shadow:var(--shadow),inset 0 0 0 1px rgba(92,107,192,.35)}
+.fnews{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.2fr);gap:16px;padding:14px 16px}
+.fday b{display:block;font-size:20px;font-weight:900}
+.fday>span{font-size:14px}
+.fnoms{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-top:8px}
+.fnoms .blbl{width:100%}
+.frole{border-left:4px solid var(--blue);padding-left:12px}
+.frole.mafia{border-left-color:var(--red)}
+.frole b{display:block;font-size:20px;font-weight:900;color:var(--blue)}
+.frole.mafia b{color:var(--red)}
+.frole>span:not(.blbl){font-size:13px;color:var(--log)}
+.fmates{margin:6px 0 0;font-size:13px;font-weight:800;color:var(--red)}
+.fchecks{margin:6px 0 0;padding-left:18px;font-size:13px}
+.badge.frb.mafia{background:var(--red);color:#fff}
+.badge.frb.town{background:var(--blue);color:#fff}
+.ftile{padding:10px 12px;display:flex;flex-direction:column;gap:6px;border-top:5px solid var(--pc)}
+.ftile.cur{box-shadow:var(--shadow),0 0 0 3px var(--gold)}
+.ftile.target{box-shadow:var(--shadow),0 0 0 3px var(--red)}
+.ftile.out{opacity:.65;filter:grayscale(.6)}
+.ftile .btn{align-self:flex-start}
+.fmv{font-size:12px;font-weight:800;color:var(--red)}
+.fmoon{background:#26304a;color:#ffe9a8;font-size:18px}
+.fbig{font-size:44px;line-height:1}
+.chtabs{display:flex;gap:4px;padding:6px 10px 0;border-top:1px solid var(--line)}
+.chtabs button{flex:1;border:none;background:var(--panel2);font:inherit;font-size:13px;font-weight:800;color:var(--muted);padding:6px;border-radius:8px;cursor:pointer}
+.chtabs button.on{background:var(--surface);color:var(--ink);box-shadow:inset 0 0 0 2px var(--blue)}
+.chtabs button.ch-mafia.on{box-shadow:inset 0 0 0 2px var(--red);color:var(--red)}
+.chtabs+.chatin{border-top:none}
+.cm.ch-mafia{background:var(--warn-bg)}
+.cm.ch-dead{background:#e5e7eb;color:#374151}
+:root[data-theme="dark"] .cm.ch-dead{background:#374151;color:#e5e7eb}
+.chtag{font-style:normal;font-size:10px;font-weight:900;text-transform:uppercase;letter-spacing:.04em;background:var(--red);color:#fff;border-radius:4px;padding:0 4px}
+.ch-dead .chtag{background:#6b7280}
+@media (max-width:960px){.fnews{grid-template-columns:minmax(0,1fr)}}

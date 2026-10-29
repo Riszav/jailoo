@@ -21,8 +21,10 @@ let ws = null, connected = false, retry = 0, build = null;
 let games = [], game = null, currentCode = null;
 // gk — какую игру создаём из лобби: «Жайлоо», «Кочёвка» или «Мухтар»; n — тайл, который игрок примеряет на поле «Кочёвки»;
 // mk — карта, режим и цель, которые игрок выбрал в «Мухтаре».
-let ui = { gk: ["nomad", "mukhtar"].includes(store.get("zh.gk")) ? store.get("zh.gk") : "zhailoo", mk: null, n: null, nr: 0, auth: null, authForm: { login: "", password: "", name: "" }, summaryHidden: false, mode: null, panel: null, robberHex: null, disc: emptyRes(), give: emptyRes(), get: emptyRes(), bg: "wood", bt: "brick", yopA: "wood", yopB: "ore", mono: "grain", quick: false, quickSent: 0 };
+let ui = { gk: ["nomad", "mukhtar", "bunker", "mafia"].includes(store.get("zh.gk")) ? store.get("zh.gk") : "zhailoo", mk: null, n: null, nr: 0, auth: null, authForm: { login: "", password: "", name: "" }, summaryHidden: false, mode: null, panel: null, robberHex: null, disc: emptyRes(), give: emptyRes(), get: emptyRes(), bg: "wood", bt: "brick", yopA: "wood", yopB: "ore", mono: "grain", quick: false, quickSent: 0 };
 let toastTimer = null;
+// Чат открытой партии: история приходит при открытии, дальше — по одному сообщению.
+let chatLog = [];
 // Таймер считаем от момента получения состояния: часы клиента и сервера могут не совпадать.
 let timerEnd = null;
 // Короткие анимации: бросок, пришедшие ресурсы, начало вашего хода. Хранится момент события.
@@ -102,8 +104,11 @@ function connect() {
       game = m.game;
       cacheGame(game);
       timerEnd = game.timeLeft != null ? Date.now() + game.timeLeft : null;
+      soundNotice(old, game);
       if (game.game === "nomad") nomadNotice(old, game);
       else if (game.game === "mukhtar") mukhtarNotice(old, game);
+      else if (game.game === "bunker") bunkerNotice(old, game);
+      else if (game.game === "mafia") mafNotice(old, game);
       else noticeChanges(old, game);
       if (game.phase !== "discard") ui.disc = emptyRes();
       if (game.phase !== "main" || game.cur !== myIndex()) ui.mode = null;
@@ -112,6 +117,18 @@ function connect() {
       quickStep();
       render();
     }
+    else if (m.t === "chat") {
+      if (m.code !== currentCode) return;
+      if (m.list) { chatLog = m.list; ui.chatSeen = Math.max(ui.chatSeen || 0, ...chatLog.map((x) => x.n)); }
+      else if (!chatLog.some((x) => x.n === m.m.n)) {
+        chatLog = [...chatLog, m.m].slice(-150);
+        if (game && m.m.i !== mySeat(game)) sfx("chat");
+        if (ui.chatOpen || game?.game === "bunker" || game?.game === "mafia") ui.chatSeen = m.m.n;
+      }
+      if (game) render();
+    }
+    else if (m.t === "emote") { if (m.code === currentCode && game) showEmote(m.i, m.e); }
+    else if (m.t === "goto") openGame(m.code);
     else if (m.t === "closed") { if (m.code === currentCode) { toast("Партия удалена"); closeGame(); } }
     else if (m.t === "error") {
       ui.quick = false;
@@ -229,7 +246,12 @@ function render() {
   queueMicrotask(retip);
   // Пока игрок печатает, комната может обновиться (зашёл бот или игрок) — сохраняем текст и курсор в поле ввода.
   const a = document.activeElement, keep = a && a.tagName === "INPUT" && a.id ? { id: a.id, v: a.value, s: a.selectionStart, e: a.selectionEnd } : null;
+  // Чат держится внизу, если его не прокрутили вверх.
+  const cb = $("chatbox"), chatAt = cb && cb.scrollHeight - cb.scrollTop - cb.clientHeight > 40 ? cb.scrollTop : null;
   renderView();
+  renderDock();
+  const cb2 = $("chatbox");
+  if (cb2) cb2.scrollTop = chatAt ?? cb2.scrollHeight;
   if (keep && $(keep.id)) {
     const el = $(keep.id);
     el.value = keep.v;
@@ -240,6 +262,8 @@ function render() {
 function renderView() {
   document.body.classList.toggle("nomad", !!game && game.game === "nomad" && game.status !== "lobby");
   document.body.classList.toggle("mukhtar", !!game && game.game === "mukhtar" && game.status !== "lobby");
+  document.body.classList.toggle("bunker", !!game && (game.game === "bunker" || game.game === "mafia") && game.status !== "lobby");
+  if (!game || game.game !== "mafia" || game.status !== "play") document.body.classList.remove("fnight");
   const me = $("me");
   me.innerHTML = account
     ? `${ava(account.name, "#f2b53a", "sm")}<span>${esc(account.name)}</span><span class="rating" title="Рейтинг — растёт за победы, падает за поражения">${account.rating}</span><button class="btn ghost small" data-a="logout" title="Выйти из аккаунта">${ICON("exit")}<span class="tl">Выйти</span></button>`
@@ -289,11 +313,146 @@ function topHTML() {
   </tbody></table></div>`;
 }
 
+// --- чат партии ---
+// Сейчас он есть в «Бункере»: в комнате ожидания и в самой игре. Писать могут игроки за столом, зрители только читают.
+// В «Мафии» у чата несколько каналов: общий, закрытый чат мафии и чат мёртвых — вкладки выбирают, куда писать.
+const CH_RU = { mafia: "мафия", dead: "мёртвые" };
+function chatHTML(s, me) {
+  const K = (GKIND[s.game] || GKIND.zhailoo).rules(), colors = K.COLORS;
+  const seat = me >= 0 ? me : s.players.findIndex((p) => p.was === myId);
+  const chans = seat >= 0 && K.chatChannels ? K.chatChannels(s, seat) : [{ id: "all", name: "Общий" }];
+  const blocked = (ch) => (seat >= 0 && K.chatCheck ? K.chatCheck(s, seat, ch) : null);
+  // Канал закрыт (ночью общий) — переключаемся на тот, куда писать можно.
+  if (!chans.some((c) => c.id === ui.chatCh) || (blocked(ui.chatCh) && chans.some((c) => !blocked(c.id)))) ui.chatCh = (chans.find((c) => !blocked(c.id)) || chans[0]).id;
+  const why = blocked(ui.chatCh);
+  const msgs = chatLog.map((m) => {
+    const p = s.players[m.i], color = p?.color || colors[m.i] || "#888", out = p?.out || p?.dead;
+    return `<div class="cm ${m.i === seat ? "own" : ""} ${m.ch && m.ch !== "all" ? "ch-" + m.ch : ""}"><b style="color:${color}">${esc(m.name)}${m.ch && CH_RU[m.ch] ? ` <i class="chtag">${CH_RU[m.ch]}</i>` : ""}${out ? ` <small class="muted">${p?.dead ? "выбыл" : "за дверью"}</small>` : ""}</b><span>${esc(m.text)}</span></div>`;
+  }).join("");
+  const tabs = chans.length > 1 ? `<div class="chtabs" role="tablist">${chans.map((c) => `<button role="tab" class="${c.id === ui.chatCh ? "on" : ""} ch-${c.id}" aria-selected="${c.id === ui.chatCh}" data-chatch="${c.id}">${c.name}</button>`).join("")}</div>` : "";
+  return `<div class="panel chatp"><div class="ph"><h3>Чат</h3></div>
+    <div class="chatbox" id="chatbox" aria-live="polite">${msgs || '<p class="muted cm-empty">Здесь игроки спорят и убеждают друг друга. Голосом удобнее — созвонитесь в Discord или Telegram, а ходы делайте здесь.</p>'}</div>
+    ${seat < 0 ? '<p class="hint cm-ro">Писать могут только игроки за столом.</p>' : why ? `${tabs}<p class="hint cm-ro">${esc(why)}</p>` : `${tabs}<div class="chatin"><input id="chatin" maxlength="300" placeholder="${ui.chatCh === "mafia" ? "Только для мафии…" : ui.chatCh === "dead" ? "Видят только выбывшие…" : "Сообщение…"}" autocomplete="off" aria-label="Сообщение в чат"><button class="btn small blue" data-a="chatsend">Отправить</button></div>`}
+  </div>`;
+}
+// Место игрока за столом — и тогда, когда за него сейчас играет бот.
+const mySeat = (s) => (s ? s.players.findIndex((p) => p.id === myId || p.was === myId) : -1);
+// Игрок не в сети: вкладка с партией у него закрыта. Ботов не отмечаем.
+const offTag = (s, i) => (s.online && !s.online[i] && !s.players[i]?.bot ? '<span class="badge off" title="Не в сети — закрыл вкладку с игрой. Через минуту его заменит бот">не в сети</span>' : "");
+// Кнопка реванша в итогах: первый нажавший создаёт комнату с теми же настройками, остальные к ней присоединяются.
+function rematchBtn(s) {
+  if (mySeat(s) < 0) return "";
+  const by = s.rematch && s.rematchBy != null ? nameOf(s, s.rematchBy) : "";
+  return `<button class="btn blue" data-a="rematch" title="${s.rematch ? `${esc(by)} собирает реванш — та же игра и настройки` : "Новая партия с теми же настройками и ботами"}">${ICON("play")}${!s.rematch ? "Реванш" : s.rematchBy === mySeat(s) ? "К реваншу" : "Присоединиться к реваншу"}</button>`;
+}
+
+// --- звуки ---
+// Синтезируются на лету через Web Audio, файлов нет. Выключаются кнопкой в углу экрана, выбор запоминается.
+let actx = null;
+const soundOn = () => store.get("zh.sound") !== "off";
+function tone(freq, at, len, type = "sine", vol = 0.12, to = null) {
+  const o = actx.createOscillator(), g = actx.createGain(), t = actx.currentTime + at;
+  o.type = type;
+  o.frequency.setValueAtTime(freq, t);
+  if (to) o.frequency.exponentialRampToValueAtTime(to, t + len);
+  g.gain.setValueAtTime(0.0001, t);
+  g.gain.exponentialRampToValueAtTime(vol, t + 0.015);
+  g.gain.exponentialRampToValueAtTime(0.0001, t + len);
+  o.connect(g).connect(actx.destination);
+  o.start(t);
+  o.stop(t + len + 0.02);
+}
+function noise(at, len, vol = 0.08) {
+  const n = Math.floor(actx.sampleRate * len), buf = actx.createBuffer(1, n, actx.sampleRate), d = buf.getChannelData(0);
+  for (let i = 0; i < n; i++) d[i] = (Math.random() * 2 - 1) * (1 - i / n);
+  const src = actx.createBufferSource(), g = actx.createGain(), f = actx.createBiquadFilter();
+  f.type = "bandpass";
+  f.frequency.value = 1800;
+  g.gain.value = vol;
+  src.buffer = buf;
+  src.connect(f).connect(g).connect(actx.destination);
+  src.start(actx.currentTime + at);
+}
+const SOUNDS = {
+  turn: () => { tone(660, 0, 0.16); tone(880, 0.13, 0.28); },
+  chat: () => tone(1250, 0, 0.07, "triangle", 0.05),
+  pop: () => tone(420, 0, 0.12, "sine", 0.1, 900),
+  dice: () => { for (let k = 0; k < 4; k++) noise(k * 0.07, 0.05, 0.12); },
+  vote: () => { tone(520, 0, 0.12, "square", 0.05); tone(520, 0.18, 0.12, "square", 0.05); },
+  win: () => [523, 659, 784, 1047].forEach((f, k) => tone(f, k * 0.12, 0.3, "triangle", 0.1)),
+  lose: () => [392, 330, 262].forEach((f, k) => tone(f, k * 0.16, 0.34, "sine", 0.1)),
+  night: () => { tone(220, 0, 0.5, "sine", 0.09); tone(165, 0.3, 0.7, "sine", 0.08); },
+};
+function sfx(name) {
+  if (!soundOn() || !SOUNDS[name]) return;
+  try {
+    actx = actx || new (window.AudioContext || window.webkitAudioContext)();
+    if (actx.state === "suspended") actx.resume();
+    SOUNDS[name]();
+  } catch {}
+}
+// Браузер разрешает звук только после действия пользователя — будим звук первым кликом.
+document.addEventListener("pointerdown", () => { if (soundOn() && !actx) try { actx = new (window.AudioContext || window.webkitAudioContext)(); } catch {} }, { once: true });
+// Что прозвучит при новом состоянии: ваш ход, бросок, голосование в «Бункере», конец партии.
+function soundNotice(old, s) {
+  if (!old || old.code !== s.code) return;
+  const me = myIndex(), seat = mySeat(s);
+  const myTurn = (x) => x.status === "play" && me >= 0 && x.cur === me && (x.game !== "bunker" || x.phase === "speech");
+  if (s.game === "mafia" && s.status === "play" && s.phase !== old.phase) sfx(s.phase === "night" ? "night" : s.phase === "vote" || s.phase === "revote" ? "vote" : old.phase === "night" ? "turn" : null);
+  if (myTurn(s) && (!myTurn(old) || old.turnNo !== s.turnNo)) sfx("turn");
+  if ((!s.game || s.game === "zhailoo") && s.dice && (!old.dice || old.turnNo !== s.turnNo)) sfx("dice");
+  if (s.game === "bunker" && (s.phase === "vote" || s.phase === "revote") && old.phase !== s.phase) sfx("vote");
+  if (s.game === "mafia" && s.players[me]?.dead && !old.players[me]?.dead) sfx("lose");
+  if (old.status === "play" && s.status === "over") sfx(seat >= 0 && (s.winners ? s.winners.includes(seat) : s.winner === seat) ? "win" : "lose");
+  if (!old.rematch && s.rematch && s.rematchBy !== seat) toast(`${nameOf(s, s.rematchBy)} зовёт на реванш — кнопка в итогах`, false, 6000);
+}
+
+// --- эмоции ---
+const EMOTES = ["👍", "😂", "😮", "😡", "😭", "🔥", "👏", "🤔", "🙏", "💀", "Кой!", "Жакшы!", "Ой-бой!", "Рахмат!", "Реванш?", "Быстрее!"];
+function showEmote(i, e) {
+  const s = game, p = s.players[i];
+  if (!p) return;
+  sfx("pop");
+  const el = document.createElement("div"), pic = /^\p{Extended_Pictographic}/u.test(e);
+  el.className = `emote ${pic ? "big" : "word"}`;
+  el.style.setProperty("--pc", p.color || "var(--gold)");
+  el.style.left = `${12 + Math.random() * 60}%`;
+  el.innerHTML = `<b>${esc(e)}</b><span>${esc(nameOf(s, i))}</span>`;
+  $("emotes").append(el);
+  setTimeout(() => el.remove(), 3200);
+}
+
+// --- угловая панель: чат, эмоции, звук ---
+// Есть в комнате и в партии. В «Бункере» чат и так сбоку, поэтому там у панели только эмоции и звук.
+function renderDock() {
+  const d = $("dock"), s = game;
+  if (!s || !currentCode) { d.hidden = true; d.innerHTML = ""; return; }
+  const seat = mySeat(s), sideChat = s.game === "bunker" || s.game === "mafia" || s.status === "lobby";
+  const unread = sideChat || ui.chatOpen ? 0 : chatLog.filter((m) => m.n > (ui.chatSeen || 0) && m.i !== seat).length;
+  d.hidden = false;
+  d.innerHTML = `${ui.chatOpen && !sideChat ? `<div class="dock-chat">${chatHTML(s, myIndex())}</div>` : ""}
+    ${ui.emoteOpen ? `<div class="panel emopick" role="menu" aria-label="Эмоции">${EMOTES.map((e) => `<button data-emote="${esc(e)}" role="menuitem" ${seat >= 0 ? "" : "disabled"}>${esc(e)}</button>`).join("")}${seat < 0 ? '<p class="hint">Эмоции — только для игроков за столом</p>' : ""}</div>` : ""}
+    <div class="dock-btns">
+      <button class="dbtn" data-a="sound" title="${soundOn() ? "Выключить звук" : "Включить звук"}" aria-label="${soundOn() ? "Выключить звук" : "Включить звук"}">${soundOn() ? "🔊" : "🔇"}</button>
+      <button class="dbtn ${ui.emoteOpen ? "on" : ""}" data-a="emotes" title="Эмоции и стикеры" aria-label="Эмоции и стикеры" aria-expanded="${!!ui.emoteOpen}">😊</button>
+      ${sideChat ? "" : `<button class="dbtn ${ui.chatOpen ? "on" : ""}" data-a="chattoggle" title="Чат" aria-label="Чат" aria-expanded="${!!ui.chatOpen}">💬${unread ? `<b class="dnum">${unread > 9 ? "9+" : unread}</b>` : ""}</button>`}
+    </div>`;
+}
+
+function sendChat() {
+  const el = $("chatin"), text = (el?.value || "").trim();
+  if (!text) return;
+  el.value = "";
+  send({ t: "chat", text, ch: ui.chatCh || "all" });
+}
+
 // Игры сайта: название, подпись в комнате и модуль правил (цвета, дополнения, число мест).
 const GKIND = {
   zhailoo: { name: "Жайлоо", sub: "кубики и ресурсы, 2–8", rules: () => ({ COLORS, MODS, MAX_PLAYERS }) },
   nomad: { name: "Кочёвка", sub: "тайлы и чабаны, 2–6", rules: () => NOMAD },
   mukhtar: { name: "Мухтар", sub: "погоня и предательство, 2–6", rules: () => MUKHTAR },
+  bunker: { name: "Бункер", sub: "спор и голосование, 4–12", rules: () => BUNKER },
+  mafia: { name: "Мафия", sub: "роли, ночь и голосование, 5–12", rules: () => MAFIA },
 };
 const MSTEPS = [
   "Вы — волк из стаи, которая утащила ягнят из аила. Стая бежит по горной тропе к развилке, за ней гонится пёс Мухтар. От развилки тропы ведут к нескольким пещерам.",
@@ -331,8 +490,10 @@ function renderLobby() {
   const gpick = `<div class="gpick" role="radiogroup" aria-label="Во что играем">
     ${gopt("zhailoo", "Жайлоо", "кубики, ресурсы, торговля", `<span class="gart hex">${ICON("logo")}</span>`)}
     ${gopt("nomad", "Кочёвка", "тайлы, чабаны, сезоны", `<span class="gart tiles">${nomad ? ["capT", "ail2o", "kurgan", "curveH"].map((id, i) => nTileSVG(tileOf(id), i % 4)).join("") : ICON("grid")}</span>`)}
-    ${gopt("mukhtar", "Мухтар", "погоня и предательство", `<span class="gart mart-dog"><svg viewBox="-.3 -.3 .6 .6" aria-hidden="true"><circle r=".29" fill="#3b2a1b"/><g transform="scale(1.35)">${mDogHead()}</g></svg></span>`)}</div>`;
-  const mukhtar = ui.gk === "mukhtar";
+    ${gopt("mukhtar", "Мухтар", "погоня и предательство", `<span class="gart mart-dog"><svg viewBox="-.3 -.3 .6 .6" aria-hidden="true"><circle r=".29" fill="#3b2a1b"/><g transform="scale(1.35)">${mDogHead()}</g></svg></span>`)}
+    ${gopt("bunker", "Бункер", "спор, тайные карты, голосование", `<span class="gart bart">${ICON("users")}</span>`)}
+    ${gopt("mafia", "Мафия", "роли, ночь, голосование", `<span class="gart fart" aria-hidden="true">🎩</span>`)}</div>`;
+  const mukhtar = ui.gk === "mukhtar", bunker = ui.gk === "bunker", mafia = ui.gk === "mafia";
   const steps = [
     "Поле — 19, 37 или 61 участок пастбищ: размер карты выбирает создатель комнаты. Каждый даёт свой ресурс: лес, глину, шерсть, зерно или руду; степь не даёт ничего.",
     "В начале каждый ставит по две юрты с тропой. Вторая юрта сразу приносит ресурсы соседних участков.",
@@ -345,7 +506,9 @@ function renderLobby() {
   $("view").innerHTML = `
     <section class="hero" id="sec-play">${heroBg()}
       <div class="hero-in">
-        ${mukhtar ? `<h1>Волки, ягнята и пёс <em>Мухтар</em> на горной тропе</h1>
+        ${mafia ? `<h1>Город засыпает, <em>просыпается мафия</em></h1>
+        <p class="lead">Мафия, шериф, доктор и мирные жители. Ведущего не нужно — ночи, речи и голосование ведёт сайт. 5–12 игроков, лучше с друзьями по ссылке.</p>` : bunker ? `<h1>Мест в бункере хватит <em>только половине</em></h1>
+        <p class="lead">Открывайте карты персонажа, спорьте в чате и голосуйте, кого не пустить. 4–12 игроков, лучше всего с друзьями по ссылке и голосом в Discord.</p>` : mukhtar ? `<h1>Волки, ягнята и пёс <em>Мухтар</em> на горной тропе</h1>
         <p class="lead">Бегите к пещерам вместе со стаей, но помните: мест в них на всех не хватит. 2–6 игроков, друзья по ссылке или боты.</p>` : nomad ? `<h1>Аилы, тропы и чабаны на <em>летних пастбищах</em></h1>
         <p class="lead">Выкладывайте тайлы, стройте аилы и делите пастбища. 2–6 игроков, друзья по ссылке или боты прямо в браузере.</p>` : `<h1>Юрты, тропы и буран на <em>горных пастбищах</em></h1>
         <p class="lead">Бесплатная онлайн-настолка для 2–8 игроков. Зовите друзей по ссылке или играйте против ботов прямо в браузере.</p>`}
@@ -373,9 +536,9 @@ function renderLobby() {
       <div class="panel rooms"><div class="rooms-h"><h3>Лучшие игроки</h3>${account ? `<span class="hint">Ваш рейтинг: <b>${account.rating}</b></span>` : `<button class="btn small blue" data-a="authopen">Войти, чтобы попасть в рейтинг</button>`}</div>${topHTML()}</div>
     </section>
     <section class="sec" id="sec-rules">
-      <h2>Как играть ${mukhtar ? "в «Мухтара»" : nomad ? "в «Кочёвку»" : "в «Жайлоо»"}</h2>
-      <div class="steps">${(mukhtar ? MSTEPS : nomad ? nsteps : steps).map((t, i) => `<div class="panel"><span class="tn">${i + 1}</span><span>${t}</span></div>`).join("")}</div>
-      ${mukhtar ? `<h3 class="nrules-h">Подробные правила</h3><div class="panel nrules-page">${mRulesHTML()}</div>` : nomad ? `<h3 class="nrules-h">Подробные правила</h3><div class="panel nrules-page">${nRulesHTML()}</div>` : `<div class="costs">${costs.map(([ic, n, c]) => `<div class="panel">${ICON(ic)}<span><b>${n}</b>${costHTML(c)}</span></div>`).join("")}</div>`}
+      <h2>Как играть ${mafia ? "в «Мафию»" : bunker ? "в «Бункер»" : mukhtar ? "в «Мухтара»" : nomad ? "в «Кочёвку»" : "в «Жайлоо»"}</h2>
+      <div class="steps">${(mafia ? MAFSTEPS : bunker ? BSTEPS : mukhtar ? MSTEPS : nomad ? nsteps : steps).map((t, i) => `<div class="panel"><span class="tn">${i + 1}</span><span>${t}</span></div>`).join("")}</div>
+      ${mafia ? `<h3 class="nrules-h">Подробные правила</h3><div class="panel nrules-page">${mafRulesHTML()}</div>` : bunker ? `<h3 class="nrules-h">Подробные правила</h3><div class="panel nrules-page">${bRulesHTML()}</div>` : mukhtar ? `<h3 class="nrules-h">Подробные правила</h3><div class="panel nrules-page">${mRulesHTML()}</div>` : nomad ? `<h3 class="nrules-h">Подробные правила</h3><div class="panel nrules-page">${nRulesHTML()}</div>` : `<div class="costs">${costs.map(([ic, n, c]) => `<div class="panel">${ICON(ic)}<span><b>${n}</b>${costHTML(c)}</span></div>`).join("")}</div>`}
     </section>
     <p class="foot">Жайлоо — игра для своих. Играть можно и без аккаунта: гостя узнают по этому браузеру. Аккаунт нужен для рейтинга.</p>`;
 }
@@ -387,16 +550,16 @@ function mapThumb(R) {
 }
 
 function renderRoom() {
-  const s = game, me = myIndex(), host = s.host === myId, nomad = s.game === "nomad", mukhtar = s.game === "mukhtar";
+  const s = game, me = myIndex(), host = s.host === myId, nomad = s.game === "nomad", mukhtar = s.game === "mukhtar", bunker = s.game === "bunker", mafia = s.game === "mafia";
   const K = (GKIND[s.game] || GKIND.zhailoo).rules(), maxP = K.MAX_PLAYERS, colors = K.COLORS, gmods = K.MODS;
-  const R = mapRadius(s), cfg = BOARD[R], tooMany = !nomad && !mukhtar && s.players.length > cfg.maxPlayers;
+  const R = mapRadius(s), cfg = BOARD[R], tooMany = !nomad && !mukhtar && !bunker && !mafia && s.players.length > cfg.maxPlayers;
   const autoR = mapRadius({ players: s.players });
   const maps = MAP_SIZES.map((k) => {
     const sel = (s.mapSize || "auto") === k, r = k === "auto" ? autoR : k;
     const sub = k === "auto" ? `сейчас ${BOARD[autoR].name.toLowerCase()}` : `${gOf({ size: k }).hexes.length} участков · до ${BOARD[k].maxPlayers}`;
     return `<button class="mapopt ${sel ? "on" : ""}" data-map="${k}" aria-pressed="${sel}" ${host ? "" : "disabled"}>${mapThumb(r)}<b>${k === "auto" ? "Авто" : BOARD[k].name}</b><span>${sub}</span></button>`;
   }).join("");
-  const timers = (mukhtar ? MUKHTAR.TURN_TIMES : TURN_TIMES).map((t) => {
+  const timers = (mafia ? MAFIA.TURN_TIMES : bunker ? BUNKER.TURN_TIMES : mukhtar ? MUKHTAR.TURN_TIMES : TURN_TIMES).map((t) => {
     const sel = (s.turnTime ?? 0) === t;
     return `<button class="topt ${sel ? "on" : ""}" data-timer="${t}" aria-pressed="${sel}" ${host ? "" : "disabled"}>${t ? (t < 120 ? `${t} с` : `${t / 60} мин`) : "Без таймера"}</button>`;
   }).join("");
@@ -408,6 +571,11 @@ function renderRoom() {
     const sel = (s.game || "zhailoo") === k;
     return `<button class="mapopt gk ${sel ? "on" : ""}" data-setgame="${k}" aria-pressed="${sel}" ${host ? "" : "disabled"}><b>${name}</b><span>${sub}</span></button>`;
   }).join("");
+  const talks = BUNKER.TALK_TIMES.map((t) => {
+    const sel = (s.talk ?? 120) === t;
+    return `<button class="topt ${sel ? "on" : ""}" data-btalk="${t}" aria-pressed="${sel}" ${host ? "" : "disabled"}>${t < 120 ? `${t} с` : `${t / 60} мин`}</button>`;
+  }).join("");
+  const minP = K.MIN_PLAYERS || 2;
   const heads = MUKHTAR.HEADS.map((h) => {
     const sel = (s.head ?? 5) === h;
     return `<button class="topt ${sel ? "on" : ""}" data-mhead="${h}" aria-pressed="${sel}" ${host ? "" : "disabled"}>${h} ${plural(h, "клетка", "клетки", "клеток")}${h === 3 ? " · трудно" : h === 7 ? " · легко" : ""}</button>`;
@@ -417,7 +585,7 @@ function renderRoom() {
     return `<button class="modopt ${on ? "on" : ""}" data-mod="${k}" aria-pressed="${on}" ${host ? "" : "disabled"}><span class="tick" aria-hidden="true">${on ? "✓" : ""}</span><span><b>${m.name}</b>${m.text}</span></button>`;
   }).join("");
   const helperList = !nomad && mod(s, "helpers") ? `<details class="hlist"><summary>Какие бывают помощники</summary>${Object.values(HELPERS).map((h) => `<p><b>${h.name}</b> — ${h.text}</p>`).join("")}</details>` : "";
-  document.title = `${mukhtar ? "Мухтар" : nomad ? "Кочёвка" : "Игра"} ${s.code} — Жайлоо`;
+  document.title = `${mafia ? "Мафия" : bunker ? "Бункер" : mukhtar ? "Мухтар" : nomad ? "Кочёвка" : "Игра"} ${s.code} — Жайлоо`;
   document.body.classList.remove("ingame");
   const link = `${location.origin}${location.pathname}#${s.code}`;
   // Сложность бота: три кнопки-ступеньки, видны только создателю.
@@ -425,11 +593,13 @@ function renderRoom() {
   const slots = [...Array(maxP).keys()].map((i) => {
     const p = s.players[i];
     if (!p) return `<div class="slot free"><span class="ava ghost">+</span><span class="nm muted">Свободное место</span>${host ? `<button class="btn small" data-a="addBot">${ICON("bot")}Бот</button>` : ""}</div>`;
-    return `<div class="slot">${ava(nameOf(s, i), colors[i])}<span class="nm">${esc(nameOf(s, i))}${p.bot && !host ? ` <span class="badge">бот · ${LEVEL_RU[p.level || "medium"]}</span>` : p.bot ? ' <span class="badge">бот</span>' : ""}${p.id === s.host ? ' <span class="badge gold">создатель</span>' : ""}${p.id === myId ? ' <span class="badge">вы</span>' : ""}</span>${host && p.bot ? levelPick(i, p.level || "medium") : ""}${host && p.id !== myId ? `<button class="btn small red" data-kick="${i}">Убрать</button>` : ""}</div>`;
+    return `<div class="slot">${ava(nameOf(s, i), colors[i])}<span class="nm">${esc(nameOf(s, i))}${p.bot && !host ? ` <span class="badge">бот · ${LEVEL_RU[p.level || "medium"]}</span>` : p.bot ? ' <span class="badge">бот</span>' : ""}${p.id === s.host ? ' <span class="badge gold">создатель</span>' : ""} ${p.id === myId ? ' <span class="badge">вы</span>' : ""}${offTag(s, i)}</span>${host && p.bot && K.LEVELS ? levelPick(i, p.level || "medium") : ""}${host && p.id !== myId ? `<button class="btn small red" data-kick="${i}">Убрать</button>` : ""}</div>`;
   }).join("");
   $("view").innerHTML = `<div class="roomgrid">
     <div class="panel pad"><h2>Игроки <span class="muted">${s.players.length}/${maxP}</span></h2><div class="slots">${slots}</div>
       ${host ? "" : `<p class="hint">Игру начинает создатель комнаты.</p>`}
+      ${mafia ? `<p class="hint">Боты в «Мафии» не говорят: ночью делают ход своей роли, днём выставляют и голосуют. Играть интереснее с людьми.</p>` : ""}
+      ${bunker ? `<p class="hint">Боты в «Бункере» не спорят: они открывают случайную карту и голосуют за того, против кого уже больше голосов. Играть интереснее с людьми.</p>` : ""}
       <h3><label for="myname">Ваше имя</label></h3>
       <div class="namerow"><input id="myname" maxlength="24" value="${esc(ui.nameDraft ?? myName)}" placeholder="Например, Айгуль"><button class="btn" data-a="rename">Сохранить</button></div></div>
     <div class="panel pad"><h3>Код комнаты</h3><span class="bigcode">${esc(s.code)}</span>
@@ -437,18 +607,22 @@ function renderRoom() {
       <div class="linkrow"><input readonly value="${esc(link)}" aria-label="Ссылка на игру"><button class="btn" data-copy="${esc(link)}">Копировать</button></div>
       <p class="hint">До ${maxP} игроков; пустые места можно отдать ботам.${nomad || mukhtar ? " Цвета фигурок раздаются по порядку хода." : ""}${mukhtar ? " Интереснее всего вчетвером и больше." : ""}</p>
       <h3>Игра</h3>
-      <div class="maps three">${kinds}</div>
-      ${mukhtar ? `<h3>Фора волков</h3><div class="topts">${heads}</div>` : nomad ? `<h3>Цель</h3><div class="topts">${targets}</div>` : `<h3>Размер карты</h3>
+      <div class="maps kinds">${kinds}</div>
+      ${bunker || mafia ? "" : mukhtar ? `<h3>Фора волков</h3><div class="topts">${heads}</div>` : nomad ? `<h3>Цель</h3><div class="topts">${targets}</div>` : `<h3>Размер карты</h3>
       <div class="maps">${maps}</div>`}
-      <h3>Таймер хода</h3>
+      <h3>${bunker || mafia ? "Время на речь" : "Таймер хода"}</h3>
       <div class="topts">${timers}</div>
-      <h3>Дополнения</h3>
-      <div class="mods">${mods}</div>${helperList}
-      ${mukhtar ? `<p class="hint">${host ? "" : "Игру, фору, таймер и дополнения выбирает создатель комнаты. "}Фора — на сколько клеток волки опережают Мухтара на старте. Время хода вышло — карту за игрока сыграет бот.</p>` : nomad ? `<p class="hint">${host ? "" : "Игру, цель, таймер и дополнения выбирает создатель комнаты. "}Время хода вышло — тайл за игрока положит бот. Дополнения можно сочетать.</p>` : `<p class="hint">${host ? "" : "Карту, таймер и дополнения выбирает создатель комнаты. "}Кубики бросаются сами через ${TIMER.roll} с. С таймером на сброс карт даётся ${TIMER.discard} с, каждое действие в ход добавляет ${TIMER.bonus} с. Время вышло — ход доигрывается автоматически.</p>`}
+      ${bunker ? `<h3>Обсуждение перед голосованием</h3><div class="topts">${talks}</div>` : ""}
+      ${mods ? `<h3>Дополнения</h3>
+      <div class="mods">${mods}</div>${helperList}` : ""}
+      ${mafia ? `<p class="hint">${host ? "" : "Игру, время и дополнения выбирает создатель комнаты. "}Мафиози: 1 при 5 игроках, 2 при 6–8, 3 при 9–12; всегда есть шериф и доктор. На ночь даётся ${MAFIA.NIGHT_TIME} с, на голос — ${MAFIA.VOTE_TIME} с.</p>` : ""}
+      ${bunker ? `<p class="hint">${host ? "" : "Игру и время выбирает создатель комнаты. "}Мест в бункере — половина от числа игроков. Без таймера речи игрок сам передаёт слово. На голос даётся ${BUNKER.VOTE_TIME} с.</p>` : mukhtar ? `<p class="hint">${host ? "" : "Игру, фору, таймер и дополнения выбирает создатель комнаты. "}Фора — на сколько клеток волки опережают Мухтара на старте. Время хода вышло — карту за игрока сыграет бот.</p>` : nomad ? `<p class="hint">${host ? "" : "Игру, цель, таймер и дополнения выбирает создатель комнаты. "}Время хода вышло — тайл за игрока положит бот. Дополнения можно сочетать.</p>` : `<p class="hint">${host ? "" : "Карту, таймер и дополнения выбирает создатель комнаты. "}Кубики бросаются сами через ${TIMER.roll} с. С таймером на сброс карт даётся ${TIMER.discard} с, каждое действие в ход добавляет ${TIMER.bonus} с. Время вышло — ход доигрывается автоматически.</p>`}
       ${tooMany ? `<p class="warn">${cfg.name} карта рассчитана максимум на ${cfg.maxPlayers} игроков — выберите карту побольше или уберите лишних.</p>` : ""}
       ${me < 0 ? `<button class="btn green big" data-a="join" ${s.players.length >= maxP || !myName ? "disabled" : ""}>Сесть за стол</button>` : ""}
       ${me < 0 && !myName ? `<p class="hint">Чтобы сесть за стол, укажите имя слева.</p>` : ""}
-      ${host ? `<button class="btn green big" data-a="start" ${s.players.length < 2 || tooMany ? "disabled" : ""}>Начать игру</button>` : ""}
+      ${host ? `<button class="btn green big" data-a="start" ${s.players.length < minP || tooMany ? "disabled" : ""}>Начать игру</button>` : ""}
+      ${host && s.players.length < minP ? `<p class="hint">Нужно минимум ${minP} ${plural(minP, "игрок", "игрока", "игроков")}.</p>` : ""}
+      ${chatHTML(s, me)}
       <div class="row">${me >= 0 && !host ? `<button class="btn red small" data-a="leave">${ICON("exit")}Выйти из комнаты</button>` : `<button class="btn small" data-a="back">К списку комнат</button>`}${host ? delBtn(s.code) : ""}</div>
     </div></div>`;
 }
@@ -638,6 +812,8 @@ function phaseHint(s, me) {
 function renderGame() {
   if (game.game === "nomad") return renderNomad();
   if (game.game === "mukhtar") return renderMukhtar();
+  if (game.game === "bunker") return renderBunker();
+  if (game.game === "mafia") return renderMafia();
   document.body.classList.add("ingame");
   const s = game, me = myIndex(), P = s.players[me], live = s.status === "play" && !s.paused, mine = me >= 0 && me === s.cur && live;
   const cur = s.players[s.cur];
@@ -753,7 +929,7 @@ function renderGame() {
   const turnExtra = mine && s.phase === "roadbuilding" ? `<button class="btn small" data-a="endRoads">Закончить караван</button>` : "";
   const players = s.players.map((p, i) => `<div class="pl ${i === s.cur && s.status === "play" ? "cur" : ""}" style="--pc:${p.color}">
       ${ava(nameOf(s, i), p.color)}
-      <div style="min-width:0"><div class="nm"><span>${esc(nameOf(s, i))}</span>${i === me ? '<span class="badge">вы</span>' : ""}${p.bot ? `<span class="badge" title="Бот — сложность: ${LEVEL_RU[p.level || "medium"]}">бот · ${LEVEL_RU[p.level || "medium"]}</span>` : ""}${s.phase === "discard" && s.toDiscard[i] ? '<span class="badge gold">сбрасывает</span>' : ""}</div>
+      <div style="min-width:0"><div class="nm"><span>${esc(nameOf(s, i))}</span>${i === me ? '<span class="badge">вы</span>' : ""}${offTag(s, i)}${p.bot ? `<span class="badge" title="Бот — сложность: ${LEVEL_RU[p.level || "medium"]}">бот · ${LEVEL_RU[p.level || "medium"]}</span>` : ""}${s.phase === "discard" && s.toDiscard[i] ? '<span class="badge gold">сбрасывает</span>' : ""}</div>
         ${p.helper && HELPERS[p.helper] ? `<div class="helperline" title="${esc(HELPERS[p.helper].name)} — ${esc(HELPERS[p.helper].text)}">${ICON("users")}${esc(HELPERS[p.helper].name)}</div>` : ""}
         <div class="pstats"><span class="${cnt(p) > discardLimit(s, i) ? "danger" : ""}" title="Карт ресурсов${cnt(p) > discardLimit(s, i) ? ` — больше ${discardLimit(s, i)}: на «7» сбросит половину` : ""}">${ICON("cards")}${cnt(p)}</span><span title="Карт развития">${ICON("card")}${devCnt(p)}</span>
           <span class="${s.army === i ? "hl" : ""}" title="Сыграно батыров${s.army === i ? " · Сильнейшая дружина" : ""}">${ICON("sword")}${p.knights}</span>
@@ -839,7 +1015,7 @@ function summaryHTML(s, me) {
     ${table}
     ${awards ? `<div class="awards">${awards}</div>` : ""}
     ${dice}
-    <div class="row"><button class="btn green" data-a="back">К списку партий</button><button class="btn" data-a="hidesummary">Посмотреть поле</button></div>
+    <div class="row"><button class="btn green" data-a="back">К списку партий</button>${rematchBtn(s)}<button class="btn" data-a="hidesummary">Посмотреть поле</button></div>
   </div></div>`;
 }
 
@@ -852,6 +1028,9 @@ function openGame(code) {
   ui.panel = null;
   ui.robberHex = null;
   ui.summaryHidden = false;
+  ui.chatOpen = false;
+  ui.chatSeen = 0;
+  chatLog = [];
   send({ t: "open", code });
 }
 // Последнее состояние партии держим в sessionStorage вкладки: после перезагрузки сразу рисуем игру,
@@ -872,6 +1051,7 @@ function closeGame() {
   game = null;
   currentCode = null;
   ui.panel = null;
+  chatLog = [];
   history.replaceState(null, "", location.pathname);
   render();
 }
@@ -1054,6 +1234,19 @@ document.addEventListener("click", async (ev) => {
   if (d.a === "theme") return setTheme(theme() === "dark" ? "light" : "dark", true);
   if (d.gk) { ui.gk = d.gk; store.set("zh.gk", d.gk); return render(); }
   if (d.setgame) return act({ type: "setGame", game: d.setgame });
+  if (d.btalk !== undefined) return act({ type: "setTalk", seconds: +d.btalk });
+  if (d.a === "chatsend") return sendChat();
+  if (d.chatch) { ui.chatCh = d.chatch; render(); return $("chatin")?.focus(); }
+  if (d.a === "sound") { store.set("zh.sound", soundOn() ? "off" : "on"); if (soundOn()) sfx("pop"); return render(); }
+  if (d.a === "emotes") { ui.emoteOpen = !ui.emoteOpen; return render(); }
+  if (d.emote) { ui.emoteOpen = false; send({ t: "emote", e: d.emote }); return render(); }
+  if (d.a === "chattoggle") {
+    ui.chatOpen = !ui.chatOpen;
+    ui.chatSeen = Math.max(ui.chatSeen || 0, ...chatLog.map((m) => m.n));
+    render();
+    return ui.chatOpen && $("chatin")?.focus();
+  }
+  if (d.a === "rematch") return send({ t: "rematch" });
   if (d.target !== undefined) return act({ type: "setTarget", target: +d.target });
   if (d.mhead !== undefined) return act({ type: "setHead", head: +d.mhead });
   if (d.a === "create") { if (game || ensureName()) send({ t: "create", game: ui.gk }); return; }
@@ -1147,8 +1340,10 @@ document.addEventListener("input", (ev) => {
 });
 document.addEventListener("keydown", (ev) => {
   if (ev.key === "Escape" && ui.auth) { ui.auth = null; return render(); }
+  if (ev.key === "Escape" && (ui.emoteOpen || ui.chatOpen)) { ui.emoteOpen = false; ui.chatOpen = false; return render(); }
   if (ev.key !== "Enter") return;
   if (AUTH_FIELDS[ev.target.id]) return submitAuth();
+  if (ev.target.id === "chatin") return sendChat();
   if (ev.target.id === "joincode") openGame(ev.target.value);
   if (ev.target.id === "myname") saveName();
 });
